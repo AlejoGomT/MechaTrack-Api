@@ -1,12 +1,15 @@
 const vehicleService = require("../services/vehicleService");
 
 const getVehicles = async (req, res) => {
-  const { branch, economicNumber } = req.query;
   try {
+    const { branch, economicNumber } = req.query;
     const vehicles = await vehicleService.getVehicles(branch, economicNumber);
     res.json(vehicles);
-  } catch (error) {
-    res.status(error.status || 500).json({ message: error.message });
+  } catch (err) {
+    console.error("Error al obtener vehículos:", err);
+    res
+      .status(err.status || 500)
+      .json({ message: err.message || "Error al obtener vehículos" });
   }
 };
 
