@@ -1,8 +1,9 @@
 const express = require("express");
 const router = express.Router();
 const orderController = require("../controllers/orderController");
-const multer = require("multer");
 const authenticateToken = require("../middleware/auth");
+const { restrictTo } = require("../middleware/role");
+const multer = require("multer");
 const path = require("path");
 
 // Configuración de multer
@@ -54,24 +55,33 @@ router.get("/:id", authenticateToken, orderController.getOrderById);
 router.post(
   "/",
   authenticateToken,
+  restrictTo("technician", "admin"),
   optionalUpload,
   orderController.createOrder
 );
 router.put(
   "/:id",
   authenticateToken,
+  restrictTo("technician", "admin"),
   optionalUpload,
   orderController.updateOrder
 );
-router.post("/:id/parts", authenticateToken, orderController.requestPart);
+router.post(
+  "/:id/parts",
+  authenticateToken,
+  restrictTo("technician"),
+  orderController.requestPart
+);
 router.put(
   "/:id/parts/:partId",
   authenticateToken,
+  restrictTo("technician"),
   orderController.updatePartQuantity
 );
 router.post(
   "/:id/parts/:partId/return",
   authenticateToken,
+  restrictTo("technician"),
   orderController.requestPartReturn
 );
 

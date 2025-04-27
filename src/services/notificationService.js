@@ -39,7 +39,7 @@ const createNotification = async (notificationData) => {
       to_user_id,
       message,
       type,
-      status,
+      status || "Pendiente", // Aseguramos que el valor por defecto sea "Pendiente"
       new Date(),
     ];
     const result = await pool.query(query, values);

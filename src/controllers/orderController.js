@@ -38,10 +38,6 @@ const createOrder = async (req, res) => {
     vehicle_economic_number,
     kilometraje,
     branch,
-    plate,
-    brand,
-    model,
-    year,
     parts,
   } = req.body;
   const images = req.files?.map((file) => file.path) || [];
@@ -66,43 +62,18 @@ const createOrder = async (req, res) => {
       }
     }
 
-    // Validar campos requeridos
-    const requiredFields = {
-      type,
-      description,
-      initial_diagnosis,
-      tasks,
-      technician_id,
-      vehicle_economic_number,
-      kilometraje,
-      branch,
-    };
-    for (const [key, value] of Object.entries(requiredFields)) {
-      if (!value) {
-        console.error(`Campo requerido faltante: ${key}`);
-        return res
-          .status(400)
-          .json({ message: `El campo ${key} es requerido` });
-      }
-    }
-
     const order = await orderService.createOrder({
       type,
       description,
       initial_diagnosis,
       tasks,
-      images: images.length > 0 ? images : [],
+      images,
       technician_id,
       vehicle_economic_number,
       kilometraje: parseInt(kilometraje, 10) || undefined,
       branch,
-      plate: plate || undefined,
-      brand: brand || undefined,
-      model: model || undefined,
-      year: parseInt(year, 10) || undefined,
       parts: parsedParts.map((part) => ({
         part_id: part.part_id,
-        name: part.name,
         quantity: parseInt(part.quantity, 10),
         status: part.status || "Solicitado",
         requested_by: part.requested_by || technician_id,
@@ -112,11 +83,6 @@ const createOrder = async (req, res) => {
     res.status(201).json(order);
   } catch (error) {
     console.error("Error en createOrder controller:", error);
-    if (error.message.includes("Unexpected end of form")) {
-      return res
-        .status(400)
-        .json({ message: "Formato de formulario inválido" });
-    }
     res.status(error.status || 500).json({ message: error.message });
   }
 };
@@ -124,6 +90,7 @@ const createOrder = async (req, res) => {
 const updateOrder = async (req, res) => {
   const { id } = req.params;
   try {
+    console.log("Datos recibidos en updateOrder:", req.body, req.files);
     const newImages = req.files?.map((file) => file.path) || [];
     const existingImages = req.body.existingImages
       ? Array.isArray(req.body.existingImages)
@@ -131,37 +98,41 @@ const updateOrder = async (req, res) => {
         : [req.body.existingImages]
       : [];
     const images = [...existingImages, ...newImages];
-    const parts = req.body.parts
-      ? Array.isArray(req.body.parts)
-        ? req.body.parts
-        : JSON.parse(req.body.parts)
-      : [];
+    let parts = [];
+    if (req.body.parts) {
+      try {
+        parts = Array.isArray(req.body.parts)
+          ? req.body.parts
+          : JSON.parse(req.body.parts);
+        if (!Array.isArray(parts)) {
+          throw new Error("Parts debe ser un array");
+        }
+      } catch (error) {
+        console.error("Error al parsear parts:", error);
+        return res.status(400).json({ message: "Formato inválido para parts" });
+      }
+    }
     const orderData = {
       initial_diagnosis: req.body.initial_diagnosis,
       tasks: req.body.tasks,
       images: images.length > 0 ? images : undefined,
+      kilometraje: req.body.kilometraje
+        ? parseInt(req.body.kilometraje, 10)
+        : undefined,
+      branch: req.body.branch,
       parts: parts.map((part) => ({
         part_id: part.part_id,
-        name: part.name,
         quantity: parseInt(part.quantity, 10),
         status: part.status || "Solicitado",
         requested_by: part.requested_by,
         authorized_by: part.authorized_by || null,
       })),
-      kilometraje: req.body.kilometraje
-        ? parseInt(req.body.kilometraje, 10)
-        : undefined,
-      branch: req.body.branch,
     };
+    console.log("Enviando a orderService.updateOrder:", orderData);
     const updatedOrder = await orderService.updateOrder(id, orderData);
     res.json(updatedOrder);
   } catch (error) {
     console.error("Error en updateOrder controller:", error);
-    if (error.message.includes("Unexpected end of form")) {
-      return res
-        .status(400)
-        .json({ message: "Formato de formulario inválido" });
-    }
     res.status(error.status || 500).json({
       message: error.message || "Error al actualizar la orden",
       details: error.stack,
@@ -175,7 +146,6 @@ const requestPart = async (req, res) => {
   try {
     await orderService.requestPart(id, {
       part_id: part.part_id,
-      name: part.name,
       quantity: parseInt(part.quantity, 10),
       status: part.status || "Solicitado",
       requested_by: part.requested_by,
