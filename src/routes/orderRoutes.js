@@ -85,4 +85,28 @@ router.post(
   orderController.requestPartReturn
 );
 
+router.put(
+  "/:id/status",
+  authenticateToken,
+  restrictTo("technician", "admin"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+      if (!status) {
+        return res
+          .status(400)
+          .json({ message: "El campo status es obligatorio" });
+      }
+      const order = await orderService.updateOrderStatus(id, status);
+      res.json(order);
+    } catch (err) {
+      console.error("Error al actualizar estado de la orden:", err);
+      res.status(err.status || 500).json({
+        message: err.message || "Error al actualizar estado de la orden",
+      });
+    }
+  }
+);
+
 module.exports = router;

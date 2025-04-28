@@ -1,4 +1,6 @@
 const orderService = require("../services/orderService");
+const notificationService = require("../services/notificationService"); // Añadir esta línea
+const pool = require("../config/database"); // Asegúrate de que esté presente
 
 const getOrders = async (req, res) => {
   const { status, economicNumber, orderNumber, technician_id } = req.query;
@@ -184,6 +186,82 @@ const requestPartReturn = async (req, res) => {
   }
 };
 
+const finalizeOrder = async (req, res) => {
+  const { id } = req.params;
+  const { action, note, status } = req.body;
+
+  try {
+    console.log(`[orderController] Finalizando orden #${id}:`, {
+      action,
+      note,
+      status,
+    });
+    if (!["accept", "reject"].includes(action)) {
+      return res.status(400).json({ message: "Acción inválida" });
+    }
+
+    const orderData = {
+      status: status || (action === "accept" ? "Finalizado" : "En Proceso"),
+    };
+
+    const updatedOrder = await orderService.updateOrder(id, orderData);
+
+    // Añadir al historial
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `
+        INSERT INTO order_history (order_id, description, status, date)
+        VALUES ($1, $2, $3, $4)
+      `,
+        [
+          id,
+          action === "accept"
+            ? "Orden aprobada por administrador"
+            : `Orden rechazada: ${note || "Sin motivo"}`,
+          updatedOrder.status,
+          new Date(),
+        ]
+      );
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    // Crear notificación para el técnico si se rechaza
+    if (action === "reject") {
+      const orderResult = await pool.query(
+        "SELECT technician_id FROM orders WHERE id = $1",
+        [id]
+      );
+      if (orderResult.rows.length) {
+        const technicianId = orderResult.rows[0].technician_id;
+        await notificationService.createNotification({
+          order_id: id,
+          from_user_id: req.user.id,
+          to_user_id: technicianId,
+          message: `Orden #${id} rechazada: ${note || "Sin motivo"}`,
+          type: "order_rejection",
+          status: "Pendiente",
+        });
+      }
+    }
+
+    console.log(`[orderController] Orden finalizada:`, updatedOrder);
+    res.json(updatedOrder);
+  } catch (error) {
+    console.error("[orderController] Error al finalizar orden:", error);
+    res.status(error.status || 500).json({
+      message: error.message || "Error al finalizar la orden",
+      details: error.stack,
+    });
+  }
+};
+
 module.exports = {
   getOrders,
   getOrderById,
@@ -192,4 +270,5 @@ module.exports = {
   requestPart,
   updatePartQuantity,
   requestPartReturn,
+  finalizeOrder, // Añadir al export
 };

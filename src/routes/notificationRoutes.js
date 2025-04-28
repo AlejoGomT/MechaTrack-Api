@@ -4,5 +4,10 @@ const notificationController = require("../controllers/notificationController");
 const authenticateToken = require("../middleware/auth");
 
 router.get("/", authenticateToken, notificationController.getNotifications);
+router.put(
+  "/:id",
+  authenticateToken,
+  notificationController.updateNotification
+);
 
 module.exports = router;
