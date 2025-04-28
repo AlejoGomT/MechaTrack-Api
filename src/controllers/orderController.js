@@ -1,4 +1,6 @@
 const orderService = require("../services/orderService");
+const notificationService = require("../services/notificationService"); // Añadir esta línea
+const pool = require("../config/database"); // Asegúrate de que esté presente
 
 const getOrders = async (req, res) => {
   const { status, economicNumber, orderNumber, technician_id } = req.query;
@@ -38,9 +40,30 @@ const createOrder = async (req, res) => {
     vehicle_economic_number,
     kilometraje,
     branch,
+    parts,
   } = req.body;
   const images = req.files?.map((file) => file.path) || [];
   try {
+    // Log para depurar datos recibidos
+    console.log("Datos recibidos en createOrder:", {
+      body: req.body,
+      files: req.files,
+    });
+
+    // Procesar parts
+    let parsedParts = [];
+    if (parts) {
+      try {
+        parsedParts = Array.isArray(parts) ? parts : JSON.parse(parts);
+        if (!Array.isArray(parsedParts)) {
+          throw new Error("Parts debe ser un array");
+        }
+      } catch (error) {
+        console.error("Error al parsear parts:", error);
+        return res.status(400).json({ message: "Formato inválido para parts" });
+      }
+    }
+
     const order = await orderService.createOrder({
       type,
       description,
@@ -49,11 +72,19 @@ const createOrder = async (req, res) => {
       images,
       technician_id,
       vehicle_economic_number,
-      kilometraje,
+      kilometraje: parseInt(kilometraje, 10) || undefined,
       branch,
+      parts: parsedParts.map((part) => ({
+        part_id: part.part_id,
+        quantity: parseInt(part.quantity, 10),
+        status: part.status || "Solicitado",
+        requested_by: part.requested_by || technician_id,
+        authorized_by: part.authorized_by || null,
+      })),
     });
     res.status(201).json(order);
   } catch (error) {
+    console.error("Error en createOrder controller:", error);
     res.status(error.status || 500).json({ message: error.message });
   }
 };
@@ -63,12 +94,26 @@ const updateOrder = async (req, res) => {
   try {
     console.log("Datos recibidos en updateOrder:", req.body, req.files);
     const newImages = req.files?.map((file) => file.path) || [];
-    const existingImages = Array.isArray(req.body.existingImages)
-      ? req.body.existingImages
-      : req.body.existingImages
-      ? [req.body.existingImages]
+    const existingImages = req.body.existingImages
+      ? Array.isArray(req.body.existingImages)
+        ? req.body.existingImages
+        : [req.body.existingImages]
       : [];
     const images = [...existingImages, ...newImages];
+    let parts = [];
+    if (req.body.parts) {
+      try {
+        parts = Array.isArray(req.body.parts)
+          ? req.body.parts
+          : JSON.parse(req.body.parts);
+        if (!Array.isArray(parts)) {
+          throw new Error("Parts debe ser un array");
+        }
+      } catch (error) {
+        console.error("Error al parsear parts:", error);
+        return res.status(400).json({ message: "Formato inválido para parts" });
+      }
+    }
     const orderData = {
       initial_diagnosis: req.body.initial_diagnosis,
       tasks: req.body.tasks,
@@ -77,6 +122,13 @@ const updateOrder = async (req, res) => {
         ? parseInt(req.body.kilometraje, 10)
         : undefined,
       branch: req.body.branch,
+      parts: parts.map((part) => ({
+        part_id: part.part_id,
+        quantity: parseInt(part.quantity, 10),
+        status: part.status || "Solicitado",
+        requested_by: part.requested_by,
+        authorized_by: part.authorized_by || null,
+      })),
     };
     console.log("Enviando a orderService.updateOrder:", orderData);
     const updatedOrder = await orderService.updateOrder(id, orderData);
@@ -90,4 +142,133 @@ const updateOrder = async (req, res) => {
   }
 };
 
-module.exports = { getOrders, getOrderById, createOrder, updateOrder };
+const requestPart = async (req, res) => {
+  const { id } = req.params;
+  const part = req.body;
+  try {
+    await orderService.requestPart(id, {
+      part_id: part.part_id,
+      quantity: parseInt(part.quantity, 10),
+      status: part.status || "Solicitado",
+      requested_by: part.requested_by,
+      authorized_by: part.authorized_by || null,
+    });
+    res.status(201).json({ message: "Repuesto solicitado exitosamente" });
+  } catch (error) {
+    console.error("Error en requestPart controller:", error);
+    res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
+const updatePartQuantity = async (req, res) => {
+  const { id, partId } = req.params;
+  const { quantity } = req.body;
+  try {
+    await orderService.updatePartQuantity(id, partId, parseInt(quantity, 10));
+    res.json({ message: "Cantidad de repuesto actualizada exitosamente" });
+  } catch (error) {
+    console.error("Error en updatePartQuantity controller:", error);
+    res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
+const requestPartReturn = async (req, res) => {
+  const { id, partId } = req.params;
+  const { quantity } = req.body;
+  try {
+    await orderService.requestPartReturn(id, partId, parseInt(quantity, 10));
+    res
+      .status(201)
+      .json({ message: "Solicitud de devolución enviada exitosamente" });
+  } catch (error) {
+    console.error("Error en requestPartReturn controller:", error);
+    res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
+const finalizeOrder = async (req, res) => {
+  const { id } = req.params;
+  const { action, note, status } = req.body;
+
+  try {
+    console.log(`[orderController] Finalizando orden #${id}:`, {
+      action,
+      note,
+      status,
+    });
+    if (!["accept", "reject"].includes(action)) {
+      return res.status(400).json({ message: "Acción inválida" });
+    }
+
+    const orderData = {
+      status: status || (action === "accept" ? "Finalizado" : "En Proceso"),
+    };
+
+    const updatedOrder = await orderService.updateOrder(id, orderData);
+
+    // Añadir al historial
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `
+        INSERT INTO order_history (order_id, description, status, date)
+        VALUES ($1, $2, $3, $4)
+      `,
+        [
+          id,
+          action === "accept"
+            ? "Orden aprobada por administrador"
+            : `Orden rechazada: ${note || "Sin motivo"}`,
+          updatedOrder.status,
+          new Date(),
+        ]
+      );
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    // Crear notificación para el técnico si se rechaza
+    if (action === "reject") {
+      const orderResult = await pool.query(
+        "SELECT technician_id FROM orders WHERE id = $1",
+        [id]
+      );
+      if (orderResult.rows.length) {
+        const technicianId = orderResult.rows[0].technician_id;
+        await notificationService.createNotification({
+          order_id: id,
+          from_user_id: req.user.id,
+          to_user_id: technicianId,
+          message: `Orden #${id} rechazada: ${note || "Sin motivo"}`,
+          type: "order_rejection",
+          status: "Pendiente",
+        });
+      }
+    }
+
+    console.log(`[orderController] Orden finalizada:`, updatedOrder);
+    res.json(updatedOrder);
+  } catch (error) {
+    console.error("[orderController] Error al finalizar orden:", error);
+    res.status(error.status || 500).json({
+      message: error.message || "Error al finalizar la orden",
+      details: error.stack,
+    });
+  }
+};
+
+module.exports = {
+  getOrders,
+  getOrderById,
+  createOrder,
+  updateOrder,
+  requestPart,
+  updatePartQuantity,
+  requestPartReturn,
+  finalizeOrder, // Añadir al export
+};
