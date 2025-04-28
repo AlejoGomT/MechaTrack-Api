@@ -24,7 +24,17 @@ const getOrderById = async (req, res) => {
     if (!order) {
       return res.status(404).json({ message: "Orden no encontrada" });
     }
-    res.json(order);
+    // Incluir invoice_number y delivery_note_number desde invoices
+    const invoiceResult = await pool.query(
+      "SELECT invoice_number, delivery_note_number FROM invoices WHERE order_id = $1",
+      [id]
+    );
+    const response = {
+      ...order,
+      invoice_number: invoiceResult.rows[0]?.invoice_number || null,
+      delivery_note_number: invoiceResult.rows[0]?.delivery_note_number || null,
+    };
+    res.json(response);
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message });
   }

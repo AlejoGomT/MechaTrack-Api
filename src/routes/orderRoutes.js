@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const orderController = require("../controllers/orderController");
+const orderService = require("../services/orderService");
 const authenticateToken = require("../middleware/auth");
 const { restrictTo } = require("../middleware/role");
 const multer = require("multer");
@@ -88,22 +89,67 @@ router.post(
 router.put(
   "/:id/status",
   authenticateToken,
-  restrictTo("technician", "admin"),
+  restrictTo("technician", "admin", "secretary"), // Añadir "secretary"
   async (req, res) => {
     try {
       const { id } = req.params;
       const { status } = req.body;
-      if (!status) {
-        return res
-          .status(400)
-          .json({ message: "El campo status es obligatorio" });
-      }
-      const order = await orderService.updateOrderStatus(id, status);
-      res.json(order);
+      const updatedOrder = await orderService.updateOrderStatus(id, status);
+      res.json(updatedOrder);
     } catch (err) {
-      console.error("Error al actualizar estado de la orden:", err);
+      console.error("Error al actualizar estado de orden:", err);
+      res.status(err.status || 500).json({ message: err.message });
+    }
+  }
+);
+
+router.put(
+  "/:id/numbers",
+  authenticateToken,
+  restrictTo("admin", "secretary"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { orderNumber, deliveryNoteNumber, invoiceNumber } = req.body;
+      const userRole = req.user.role;
+
+      // Validar permisos
+      if (userRole === "secretary" && (orderNumber || deliveryNoteNumber)) {
+        return res.status(403).json({
+          message:
+            "La secretaria no puede actualizar número de pedido ni albarán",
+        });
+      }
+      if (userRole === "admin" && invoiceNumber) {
+        return res.status(403).json({
+          message: "El administrador no puede actualizar número de factura",
+        });
+      }
+
+      // Actualizar order_number si está presente y el usuario es admin
+      let updatedOrder = null;
+      if (orderNumber && userRole === "admin") {
+        updatedOrder = await orderService.updateOrderNumber(id, orderNumber);
+      }
+
+      // Actualizar delivery_note_number o invoice_number si están presentes
+      let updatedInvoice = null;
+      if (deliveryNoteNumber || invoiceNumber) {
+        updatedInvoice = await orderService.updateInvoiceNumbers(
+          id,
+          { deliveryNoteNumber, invoiceNumber },
+          req.user.id
+        );
+      }
+
+      res.json({
+        order: updatedOrder || (await orderService.getOrderById(id)),
+        invoice: updatedInvoice,
+      });
+    } catch (err) {
+      console.error("Error al actualizar números de orden/factura:", err);
       res.status(err.status || 500).json({
-        message: err.message || "Error al actualizar estado de la orden",
+        message: err.message || "Error al actualizar números de orden/factura",
       });
     }
   }
