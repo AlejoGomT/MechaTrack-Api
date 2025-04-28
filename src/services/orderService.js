@@ -60,7 +60,7 @@ const getOrderById = async (id) => {
     [id]
   );
   const invoiceResult = await pool.query(
-    "SELECT * FROM invoices WHERE order_id = $1",
+    "SELECT invoice_number, delivery_note_number, total FROM invoices WHERE order_id = $1",
     [id]
   );
 
@@ -671,11 +671,12 @@ const updateOrderStatus = async (id, status) => {
           from_user_id: orderResult.rows[0].technician_id,
           to_user_id: adminId,
           message: `Orden #${id} enviada para aprobación`,
-          type: "order_approval",
+          type: "closure_approval",
           status: "Pendiente",
         },
         client
       );
+
       console.log(
         "[ORDER_SERVICE] Notificación creada para estado Pendiente en orden:",
         id
@@ -697,6 +698,146 @@ const updateOrderStatus = async (id, status) => {
     throw {
       status: err.status || 500,
       message: err.message || "Error al actualizar estado de la orden",
+      details: err.stack,
+    };
+  } finally {
+    client.release();
+    console.log("[ORDER_SERVICE] Cliente de base de datos liberado");
+  }
+};
+
+const updateOrderNumber = async (id, orderNumber) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    console.log(
+      "[ORDER_SERVICE] Transacción iniciada para updateOrderNumber:",
+      id
+    );
+
+    const orderResult = await client.query(
+      "SELECT * FROM orders WHERE id = $1",
+      [id]
+    );
+    if (!orderResult.rows.length) {
+      console.error("[ORDER_SERVICE] Orden no encontrada para id:", id);
+      throw { status: 404, message: "Orden no encontrada" };
+    }
+
+    const query = `
+      UPDATE orders
+      SET order_number = $1, updated_at = $2
+      WHERE id = $3
+      RETURNING *
+    `;
+    const values = [orderNumber || null, new Date(), id];
+    console.log(
+      "[ORDER_SERVICE] Consulta SQL para updateOrderNumber:",
+      query,
+      values
+    );
+    const result = await client.query(query, values);
+    console.log("[ORDER_SERVICE] Orden actualizada:", result.rows[0]);
+
+    await client.query("COMMIT");
+    return result.rows[0];
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("[ORDER_SERVICE] Error al actualizar número de pedido:", err);
+    throw {
+      status: err.status || 500,
+      message: err.message || "Error al actualizar número de pedido",
+      details: err.stack,
+    };
+  } finally {
+    client.release();
+    console.log("[ORDER_SERVICE] Cliente de base de datos liberado");
+  }
+};
+
+const updateInvoiceNumbers = async (
+  orderId,
+  { deliveryNoteNumber, invoiceNumber },
+  userId
+) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    console.log(
+      "[ORDER_SERVICE] Transacción iniciada para updateInvoiceNumbers:",
+      orderId
+    );
+
+    // Verificar que la orden existe
+    const orderResult = await client.query(
+      "SELECT * FROM orders WHERE id = $1",
+      [orderId]
+    );
+    if (!orderResult.rows.length) {
+      console.error("[ORDER_SERVICE] Orden no encontrada para id:", orderId);
+      throw { status: 404, message: "Orden no encontrada" };
+    }
+
+    // Verificar si ya existe un registro en invoices
+    let invoiceResult = await client.query(
+      "SELECT * FROM invoices WHERE order_id = $1",
+      [orderId]
+    );
+
+    if (!invoiceResult.rows.length) {
+      // Crear un nuevo registro en invoices si no existe
+      const insertQuery = `
+        INSERT INTO invoices (order_id, issued_by, issued_at)
+        VALUES ($1, $2, $3)
+        RETURNING *
+      `;
+      const insertValues = [orderId, userId, new Date()];
+      console.log(
+        "[ORDER_SERVICE] Creando registro en invoices:",
+        insertValues
+      );
+      invoiceResult = await client.query(insertQuery, insertValues);
+      console.log(
+        "[ORDER_SERVICE] Registro de factura creado:",
+        invoiceResult.rows[0]
+      );
+    }
+
+    // Actualizar delivery_note_number y/o invoice_number
+    const updateQuery = `
+      UPDATE invoices
+      SET
+        delivery_note_number = COALESCE($1, delivery_note_number),
+        invoice_number = COALESCE($2, invoice_number),
+        issued_at = $3
+      WHERE order_id = $4
+      RETURNING *
+    `;
+    const updateValues = [
+      deliveryNoteNumber || null,
+      invoiceNumber || null,
+      new Date(),
+      orderId,
+    ];
+    console.log(
+      "[ORDER_SERVICE] Consulta SQL para updateInvoiceNumbers:",
+      updateQuery,
+      updateValues
+    );
+    const result = await client.query(updateQuery, updateValues);
+    console.log("[ORDER_SERVICE] Factura actualizada:", result.rows[0]);
+
+    await client.query("COMMIT");
+    return result.rows[0];
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(
+      "[ORDER_SERVICE] Error al actualizar números de factura:",
+      err
+    );
+    throw {
+      status: err.status || 500,
+      message: err.message || "Error al actualizar números de factura",
       details: err.stack,
     };
   } finally {
@@ -963,6 +1104,8 @@ module.exports = {
   createOrder,
   updateOrder,
   updateOrderStatus,
+  updateOrderNumber,
+  updateInvoiceNumbers,
   requestPart,
   updatePartQuantity,
   requestPartReturn,
