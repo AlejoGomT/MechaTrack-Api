@@ -2,15 +2,15 @@ const pool = require("../config/database");
 
 const getParts = async (model) => {
   try {
-    let query = "SELECT * FROM parts";
+    let query = "SELECT * FROM parts WHERE compatible_models IS NOT NULL";
     const values = [];
     if (model) {
-      query += " WHERE $1 = ANY(compatible_models)";
+      query += " AND $1 = ANY(compatible_models)";
       values.push(model);
     }
     console.log("[partService] Consulta para getParts:", query, values);
     const result = await pool.query(query, values);
-    console.log("[partService] Repuestos obtenidos:", result.rows.length);
+    console.log("[partService] Repuestos obtenidos:", result.rows);
     return result.rows;
   } catch (error) {
     console.error("[partService] Error al obtener repuestos:", error);

@@ -1,6 +1,6 @@
 const orderService = require("../services/orderService");
-const notificationService = require("../services/notificationService"); // Añadir esta línea
-const pool = require("../config/database"); // Asegúrate de que esté presente
+const notificationService = require("../services/notificationService");
+const pool = require("../config/database");
 
 const getOrders = async (req, res) => {
   const { status, economicNumber, orderNumber, technician_id } = req.query;
@@ -34,8 +34,10 @@ const getOrderById = async (req, res) => {
       invoice_number: invoiceResult.rows[0]?.invoice_number || null,
       delivery_note_number: invoiceResult.rows[0]?.delivery_note_number || null,
     };
+    console.log("[orderController] getOrderById response:", response);
     res.json(response);
   } catch (error) {
+    console.error("[orderController] Error en getOrderById:", error);
     res.status(error.status || 500).json({ message: error.message });
   }
 };
@@ -54,13 +56,11 @@ const createOrder = async (req, res) => {
   } = req.body;
   const images = req.files?.map((file) => file.path) || [];
   try {
-    // Log para depurar datos recibidos
     console.log("Datos recibidos en createOrder:", {
       body: req.body,
       files: req.files,
     });
 
-    // Procesar parts
     let parsedParts = [];
     if (parts) {
       try {
@@ -71,6 +71,21 @@ const createOrder = async (req, res) => {
       } catch (error) {
         console.error("Error al parsear parts:", error);
         return res.status(400).json({ message: "Formato inválido para parts" });
+      }
+    }
+
+    // Obtener precios de parts si no se proporcionan
+    for (const part of parsedParts) {
+      if (!part.price) {
+        const partResult = await pool.query(
+          "SELECT price FROM parts WHERE id = $1",
+          [part.part_id]
+        );
+        if (partResult.rows.length) {
+          part.price = partResult.rows[0].price;
+        } else {
+          throw new Error(`Repuesto con ID ${part.part_id} no encontrado`);
+        }
       }
     }
 
@@ -87,6 +102,7 @@ const createOrder = async (req, res) => {
       parts: parsedParts.map((part) => ({
         part_id: part.part_id,
         quantity: parseInt(part.quantity, 10),
+        price: parseFloat(part.price),
         status: part.status || "Solicitado",
         requested_by: part.requested_by || technician_id,
         authorized_by: part.authorized_by || null,
@@ -124,6 +140,22 @@ const updateOrder = async (req, res) => {
         return res.status(400).json({ message: "Formato inválido para parts" });
       }
     }
+
+    // Obtener precios de parts si no se proporcionan
+    for (const part of parts) {
+      if (!part.price) {
+        const partResult = await pool.query(
+          "SELECT price FROM parts WHERE id = $1",
+          [part.part_id]
+        );
+        if (partResult.rows.length) {
+          part.price = partResult.rows[0].price;
+        } else {
+          throw new Error(`Repuesto con ID ${part.part_id} no encontrado`);
+        }
+      }
+    }
+
     const orderData = {
       initial_diagnosis: req.body.initial_diagnosis,
       tasks: req.body.tasks,
@@ -135,6 +167,7 @@ const updateOrder = async (req, res) => {
       parts: parts.map((part) => ({
         part_id: part.part_id,
         quantity: parseInt(part.quantity, 10),
+        price: parseFloat(part.price),
         status: part.status || "Solicitado",
         requested_by: part.requested_by,
         authorized_by: part.authorized_by || null,
@@ -156,9 +189,25 @@ const requestPart = async (req, res) => {
   const { id } = req.params;
   const part = req.body;
   try {
+    console.log("[orderController] requestPart data:", part);
+    // Obtener price desde parts si no se proporciona
+    let price = parseFloat(part.price);
+    if (!price) {
+      const partResult = await pool.query(
+        "SELECT price FROM parts WHERE id = $1",
+        [part.part_id]
+      );
+      if (partResult.rows.length) {
+        price = partResult.rows[0].price;
+      } else {
+        throw new Error(`Repuesto con ID ${part.part_id} no encontrado`);
+      }
+    }
+
     await orderService.requestPart(id, {
       part_id: part.part_id,
       quantity: parseInt(part.quantity, 10),
+      price,
       status: part.status || "Solicitado",
       requested_by: part.requested_by,
       authorized_by: part.authorized_by || null,
@@ -255,7 +304,7 @@ const finalizeOrder = async (req, res) => {
           from_user_id: req.user.id,
           to_user_id: technicianId,
           message: `Orden #${id} rechazada: ${note || "Sin motivo"}`,
-          type: "order_rejection",
+          type: "closure_rejection",
           status: "Pendiente",
         });
       }
@@ -280,5 +329,5 @@ module.exports = {
   requestPart,
   updatePartQuantity,
   requestPartReturn,
-  finalizeOrder, // Añadir al export
+  finalizeOrder,
 };

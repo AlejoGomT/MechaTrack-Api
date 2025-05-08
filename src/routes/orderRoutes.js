@@ -6,6 +6,8 @@ const authenticateToken = require("../middleware/auth");
 const { restrictTo } = require("../middleware/role");
 const multer = require("multer");
 const path = require("path");
+const pool = require("../config/database");
+const notificationService = require("../services/notificationService");
 
 // Configuración de multer
 const storage = multer.diskStorage({
@@ -76,8 +78,71 @@ router.post(
 router.put(
   "/:id/parts/:partId",
   authenticateToken,
-  restrictTo("technician"),
-  orderController.updatePartQuantity
+  restrictTo("technician", "admin"),
+  async (req, res) => {
+    try {
+      const { id, partId } = req.params;
+      const { quantity, status, price, note, authorized_by } = req.body;
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+
+        // Actualizar el repuesto incluyendo authorized_by
+        const updateQuery = `
+          UPDATE order_parts
+          SET quantity = $1, status = $2, price = $3, authorized_by = $4
+          WHERE order_id = $5 AND part_id = $6
+          RETURNING *
+        `;
+        const updateValues = [
+          quantity,
+          status,
+          price || null,
+          authorized_by || null, // Guardar authorized_by o NULL si no se proporciona
+          id,
+          partId,
+        ];
+        const result = await client.query(updateQuery, updateValues);
+
+        if (!result.rows.length) {
+          throw { status: 404, message: "Repuesto no encontrado" };
+        }
+
+        // Crear notificación si el repuesto es rechazado
+        if (status === "Rechazado" && note) {
+          const orderResult = await client.query(
+            "SELECT technician_id FROM orders WHERE id = $1",
+            [id]
+          );
+          if (orderResult.rows.length) {
+            const technicianId = orderResult.rows[0].technician_id;
+            await notificationService.createNotification(
+              {
+                order_id: id,
+                from_user_id: req.user.id,
+                to_user_id: technicianId,
+                message: `Repuesto rechazado: ${note}`,
+                type: "part_rejection",
+                status: "Pendiente",
+              },
+              client
+            );
+          }
+        }
+
+        await client.query("COMMIT");
+        res.json(result.rows[0]);
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      console.error("Error al actualizar repuesto:", err);
+      res.status(err.status || 500).json({ message: err.message });
+    }
+  }
 );
 router.post(
   "/:id/parts/:partId/return",
@@ -89,7 +154,7 @@ router.post(
 router.put(
   "/:id/status",
   authenticateToken,
-  restrictTo("technician", "admin", "secretary"), // Añadir "secretary"
+  restrictTo("technician", "admin", "secretary"),
   async (req, res) => {
     try {
       const { id } = req.params;
