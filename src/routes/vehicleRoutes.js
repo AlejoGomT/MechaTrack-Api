@@ -17,6 +17,12 @@ router.get(
   vehicleController.getVehicleModels
 );
 router.get(
+  "/brands",
+  authenticateToken,
+  restrictTo("admin", "technician"),
+  vehicleController.getVehicleBrands
+);
+router.get(
   "/branches",
   authenticateToken,
   restrictTo("admin"),

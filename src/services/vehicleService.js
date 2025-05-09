@@ -22,7 +22,6 @@ const getVehicles = async (
       query += " AND model = $" + (values.length + 1);
       values.push(model);
     }
-    // Paginación
     query += " ORDER BY economic_number";
     query +=
       " LIMIT $" + (values.length + 1) + " OFFSET $" + (values.length + 2);
@@ -31,7 +30,6 @@ const getVehicles = async (
     console.log("Consulta de vehículos:", query, values);
     const result = await pool.query(query, values);
 
-    // Contar total para paginación
     const countQuery =
       "SELECT COUNT(*) FROM vehicles WHERE 1=1" +
       query.split("WHERE 1=1")[1].split("ORDER BY")[0];
@@ -69,12 +67,26 @@ const getVehicleModels = async () => {
   }
 };
 
+const getVehicleBrands = async () => {
+  try {
+    const query = "SELECT DISTINCT brand FROM vehicles ORDER BY brand";
+    console.log("Consulta de marcas:", query);
+    const result = await pool.query(query);
+    return result.rows.map((row) => row.brand);
+  } catch (err) {
+    console.error("Error en getVehicleBrands:", err);
+    throw {
+      status: 500,
+      message: `Error al obtener marcas de vehículos: ${err.message}`,
+    };
+  }
+};
+
 const createVehicle = async (vehicleData) => {
   try {
     const { economic_number, branch, brand, model, year, mileage, vin, plate } =
       vehicleData;
 
-    // Validar duplicados
     const checkQuery = `
       SELECT economic_number, vin, plate FROM vehicles 
       WHERE economic_number = $1 OR vin = $2 OR plate = $3
@@ -156,7 +168,6 @@ const deleteVehicle = async (economic_number) => {
   } catch (err) {
     console.error("Error en deleteVehicle:", err);
     if (err.code === "23503") {
-      // Violación de clave foránea
       throw {
         status: 400,
         message:
@@ -187,6 +198,7 @@ const getBranches = async () => {
 module.exports = {
   getVehicles,
   getVehicleModels,
+  getVehicleBrands,
   createVehicle,
   updateVehicle,
   deleteVehicle,

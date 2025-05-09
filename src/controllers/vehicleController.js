@@ -31,6 +31,18 @@ const getVehicleModels = async (req, res) => {
   }
 };
 
+const getVehicleBrands = async (req, res) => {
+  try {
+    const brands = await vehicleService.getVehicleBrands();
+    res.json(brands);
+  } catch (err) {
+    console.error("Error al obtener marcas de vehículos:", err);
+    res.status(err.status || 500).json({
+      message: err.message || "Error al obtener marcas de vehículos",
+    });
+  }
+};
+
 const createVehicle = async (req, res) => {
   try {
     const vehicleData = req.body;
@@ -89,6 +101,7 @@ const getBranches = async (req, res) => {
 module.exports = {
   getVehicles,
   getVehicleModels,
+  getVehicleBrands,
   createVehicle,
   updateVehicle,
   deleteVehicle,
