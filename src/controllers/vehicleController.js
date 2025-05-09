@@ -13,4 +13,18 @@ const getVehicles = async (req, res) => {
   }
 };
 
-module.exports = { getVehicles };
+const getVehicleModels = async (req, res) => {
+  try {
+    const models = await vehicleService.getVehicleModels();
+    res.json(models);
+  } catch (err) {
+    console.error("Error al obtener modelos de vehículos:", err);
+    res
+      .status(err.status || 500)
+      .json({
+        message: err.message || "Error al obtener modelos de vehículos",
+      });
+  }
+};
+
+module.exports = { getVehicles, getVehicleModels };

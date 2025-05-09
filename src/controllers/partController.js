@@ -1,10 +1,20 @@
 const partService = require("../services/partService");
 
 const getParts = async (req, res) => {
-  const { model } = req.query;
+  const { model, page = 1, limit = 10 } = req.query;
   try {
-    const parts = await partService.getParts(model);
-    res.json(parts);
+    const { parts, total } = await partService.getParts(
+      model,
+      parseInt(page),
+      parseInt(limit)
+    );
+    res.json({
+      parts,
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      totalPages: Math.ceil(total / limit),
+    });
   } catch (error) {
     console.error("[partController] Error al obtener repuestos:", error);
     res.status(error.status || 500).json({ message: error.message });
@@ -12,15 +22,13 @@ const getParts = async (req, res) => {
 };
 
 const createPart = async (req, res) => {
-  const { id, name, description, quantity, price } = req.body;
+  const { id, name, description, quantity, price, compatible_models } =
+    req.body;
   let imageUrl = null;
 
   try {
     if (req.file) {
-      // Nota: Implementar uploadToCloudinary o un equivalente
-      // const uploadResult = await uploadToCloudinary(req.file.path);
-      // imageUrl = uploadResult.secure_url;
-      imageUrl = req.file.path; // Usar la ruta local por ahora
+      imageUrl = `/uploads/${req.file.filename}`; // Ruta relativa para servir desde express.static
     }
 
     const part = await partService.createPart({
@@ -30,6 +38,9 @@ const createPart = async (req, res) => {
       quantity: parseInt(quantity, 10),
       price: parseFloat(price),
       image: imageUrl,
+      compatible_models: compatible_models
+        ? JSON.parse(compatible_models)
+        : null,
     });
 
     console.log("[partController] Repuesto creado:", part);
@@ -43,4 +54,48 @@ const createPart = async (req, res) => {
   }
 };
 
-module.exports = { getParts, createPart };
+const updatePart = async (req, res) => {
+  const { id } = req.params;
+  const { name, description, quantity, price, compatible_models } = req.body;
+  let imageUrl = null;
+
+  try {
+    if (req.file) {
+      imageUrl = `/uploads/${req.file.filename}`; // Ruta relativa
+    }
+
+    const part = await partService.updatePart(id, {
+      name,
+      description,
+      quantity: parseInt(quantity, 10),
+      price: parseFloat(price),
+      image: imageUrl || req.body.image, // Mantener imagen existente si no se sube una nueva
+      compatible_models: compatible_models
+        ? JSON.parse(compatible_models)
+        : null,
+    });
+
+    console.log("[partController] Repuesto actualizado:", part);
+    res.json(part);
+  } catch (error) {
+    console.error("[partController] Error al actualizar repuesto:", error);
+    res.status(error.status || 500).json({
+      message: error.message || "Error al actualizar repuesto",
+      details: error.stack,
+    });
+  }
+};
+
+const deletePart = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const part = await partService.deletePart(id);
+    console.log("[partController] Repuesto eliminado:", part);
+    res.json({ message: "Repuesto eliminado", part });
+  } catch (error) {
+    console.error("[partController] Error al eliminar repuesto:", error);
+    res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
+module.exports = { getParts, createPart, updatePart, deletePart };

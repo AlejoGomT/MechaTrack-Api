@@ -18,8 +18,8 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB límite por archivo
-    files: 1, // Máximo 1 archivo
+    fileSize: 10 * 1024 * 1024, // 10MB límite
+    files: 1,
   },
   fileFilter: (req, file, cb) => {
     const filetypes = /jpeg|jpg|png/;
@@ -34,7 +34,7 @@ const upload = multer({
   },
 }).single("image");
 
-// Middleware para hacer que los archivos sean opcionales
+// Middleware para subida opcional
 const optionalUpload = (req, res, next) => {
   upload(req, res, (err) => {
     if (err instanceof multer.MulterError) {
@@ -62,6 +62,19 @@ router.post(
   restrictTo("admin"),
   optionalUpload,
   partController.createPart
+);
+router.put(
+  "/:id",
+  authenticateToken,
+  restrictTo("admin"),
+  optionalUpload,
+  partController.updatePart
+);
+router.delete(
+  "/:id",
+  authenticateToken,
+  restrictTo("admin"),
+  partController.deletePart
 );
 
 module.exports = router;
