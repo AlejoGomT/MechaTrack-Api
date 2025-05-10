@@ -7,7 +7,7 @@ const authenticateToken = (req, res, next) => {
   if (!token) return res.status(401).json({ message: "Acceso denegado" });
 
   jwt.verify(token, config.jwtSecret, (err, user) => {
-    if (err) return res.status(403).json({ message: "Token inválido" });
+    if (err) return res.status(401).json({ message: "Token inválido" });
     req.user = user;
     next();
   });
