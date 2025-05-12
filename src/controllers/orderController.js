@@ -139,7 +139,7 @@ const updateOrder = async (req, res) => {
     const existingImages = req.body.existingImages
       ? Array.isArray(req.body.existingImages)
         ? req.body.existingImages
-        : JSON.parse(req.body.existingImages)
+        : JSON.parse(req.body.existingImages || "[]")
       : [];
     const images = [...existingImages, ...newImages];
     let parts = [];
@@ -147,19 +147,60 @@ const updateOrder = async (req, res) => {
       try {
         parts = Array.isArray(req.body.parts)
           ? req.body.parts
-          : JSON.parse(req.body.parts);
+          : JSON.parse(req.body.parts || "[]");
         if (!Array.isArray(parts)) {
           throw new Error("Parts debe ser un array");
         }
+        for (const part of parts) {
+          if (
+            !part.part_id ||
+            String(part.part_id).length > 10 ||
+            !part.quantity ||
+            !part.requested_by ||
+            String(part.requested_by).length > 10 ||
+            !part.price
+          ) {
+            throw new Error(
+              `Datos de repuesto inválidos: ${JSON.stringify(part)}`
+            );
+          }
+          // Validar que requested_by exista en la tabla users
+          const userResult = await pool.query(
+            "SELECT id FROM users WHERE id = $1",
+            [part.requested_by]
+          );
+          if (!userResult.rows.length) {
+            throw new Error(
+              `Usuario con ID ${part.requested_by} no encontrado`
+            );
+          }
+          // Validar authorized_by si está presente
+          if (part.authorized_by) {
+            if (String(part.authorized_by).length > 10) {
+              throw new Error(
+                `ID de usuario autorizado excede el límite de 10 caracteres: ${part.authorized_by}`
+              );
+            }
+            const authUserResult = await pool.query(
+              "SELECT id FROM users WHERE id = $1",
+              [part.authorized_by]
+            );
+            if (!authUserResult.rows.length) {
+              throw new Error(
+                `Usuario autorizado con ID ${part.authorized_by} no encontrado`
+              );
+            }
+          }
+        }
       } catch (error) {
         console.error("Error al parsear parts:", error);
-        return res.status(400).json({ message: "Formato inválido para parts" });
+        return res.status(400).json({ message: error.message });
       }
     }
 
     // Obtener precios de parts si no se proporcionan
     for (const part of parts) {
-      if (!part.price) {
+      if (!part.price || part.price <= 0) {
         const partResult = await pool.query(
           "SELECT price FROM parts WHERE id = $1",
           [part.part_id]
@@ -180,6 +221,7 @@ const updateOrder = async (req, res) => {
         ? parseInt(req.body.kilometraje, 10)
         : undefined,
       branch: req.body.branch,
+      vehicle_economic_number: req.body.vehicle_economic_number,
       parts: parts.map((part) => ({
         part_id: part.part_id,
         quantity: parseInt(part.quantity, 10),
@@ -196,7 +238,7 @@ const updateOrder = async (req, res) => {
     console.error("Error en updateOrder controller:", error);
     res.status(error.status || 500).json({
       message: error.message || "Error al actualizar la orden",
-      details: error.stack,
+      details: error.details || error.message,
     });
   }
 };

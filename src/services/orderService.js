@@ -55,66 +55,78 @@ const getOrders = async (
 };
 
 const getOrderById = async (id) => {
-  const orderResult = await pool.query(
-    "SELECT o.*, v.branch, v.plate, v.brand, v.model, v.year, v.mileage FROM orders o LEFT JOIN vehicles v ON o.vehicle_economic_number = v.economic_number WHERE o.id = $1",
-    [id]
-  );
-  if (!orderResult.rows.length) {
-    console.log("[ORDER_SERVICE] Orden no encontrada para id:", id);
-    return null;
+  const client = await pool.connect();
+  try {
+    const orderResult = await client.query(
+      "SELECT o.*, v.branch, v.plate, v.brand, v.model, v.year, v.mileage FROM orders o LEFT JOIN vehicles v ON o.vehicle_economic_number = v.economic_number WHERE o.id = $1",
+      [id]
+    );
+    if (!orderResult.rows.length) {
+      console.log("[ORDER_SERVICE] Orden no encontrada para id:", id);
+      return null;
+    }
+
+    const order = orderResult.rows[0];
+    const historyResult = await client.query(
+      "SELECT * FROM order_history WHERE order_id = $1",
+      [id]
+    );
+    // Modificar la consulta para incluir nombres completos y IDs
+    const partsResult = await client.query(
+      `
+      SELECT op.*, p.name,
+             req_user.id AS requested_by_id,
+             req_user.first_name AS requested_by_first_name,
+             req_user.last_name AS requested_by_last_name,
+             auth_user.id AS authorized_by_id,
+             auth_user.first_name AS authorized_by_first_name,
+             auth_user.last_name AS authorized_by_last_name
+      FROM order_parts op
+      JOIN parts p ON op.part_id = p.id
+      LEFT JOIN users req_user ON op.requested_by = req_user.id
+      LEFT JOIN users auth_user ON op.authorized_by = auth_user.id
+      WHERE order_id = $1
+      `,
+      [id]
+    );
+    const notificationsResult = await client.query(
+      "SELECT * FROM notifications WHERE order_id = $1",
+      [id]
+    );
+    const invoiceResult = await client.query(
+      "SELECT invoice_number, delivery_note_number, total FROM invoices WHERE order_id = $1",
+      [id]
+    );
+
+    const response = {
+      ...order,
+      history: historyResult.rows,
+      parts: partsResult.rows.map((part) => ({
+        part_id: part.part_id,
+        name: part.name,
+        quantity: part.quantity,
+        price: part.price,
+        status: part.status,
+        requested_by_id: part.requested_by_id || null, // ID del usuario que solicitó
+        requested_by: part.requested_by_first_name
+          ? `${part.requested_by_first_name} ${part.requested_by_last_name}`
+          : "Técnico", // Nombre completo para admin
+        authorized_by_id: part.authorized_by_id || null, // ID del usuario que autorizó
+        authorized_by: part.authorized_by_first_name
+          ? `${part.authorized_by_first_name} ${part.authorized_by_last_name}`
+          : null, // Nombre completo para admin
+      })),
+      notifications: notificationsResult.rows,
+      invoice: invoiceResult.rows[0] || null,
+    };
+    console.log("[ORDER_SERVICE] Respuesta de getOrderById:", response);
+    return response;
+  } catch (error) {
+    console.error("[ORDER_SERVICE] Error en getOrderById:", error);
+    throw error;
+  } finally {
+    client.release();
   }
-
-  const order = orderResult.rows[0];
-  const historyResult = await pool.query(
-    "SELECT * FROM order_history WHERE order_id = $1",
-    [id]
-  );
-  // Modificar la consulta para incluir nombres completos de requested_by y authorized_by
-  const partsResult = await pool.query(
-    `
-    SELECT op.*, p.name,
-           req_user.first_name AS requested_by_first_name,
-           req_user.last_name AS requested_by_last_name,
-           auth_user.first_name AS authorized_by_first_name,
-           auth_user.last_name AS authorized_by_last_name
-    FROM order_parts op
-    JOIN parts p ON op.part_id = p.id
-    LEFT JOIN users req_user ON op.requested_by = req_user.id
-    LEFT JOIN users auth_user ON op.authorized_by = auth_user.id
-    WHERE order_id = $1
-    `,
-    [id]
-  );
-  const notificationsResult = await pool.query(
-    "SELECT * FROM notifications WHERE order_id = $1",
-    [id]
-  );
-  const invoiceResult = await pool.query(
-    "SELECT invoice_number, delivery_note_number, total FROM invoices WHERE order_id = $1",
-    [id]
-  );
-
-  const response = {
-    ...order,
-    history: historyResult.rows,
-    parts: partsResult.rows.map((part) => ({
-      part_id: part.part_id,
-      name: part.name,
-      quantity: part.quantity,
-      price: part.price,
-      status: part.status,
-      requested_by: part.requested_by_first_name
-        ? `${part.requested_by_first_name} ${part.requested_by_last_name}`
-        : "Técnico", // Devolver nombre completo o "Técnico" si no hay usuario
-      authorized_by: part.authorized_by_first_name
-        ? `${part.authorized_by_first_name} ${part.authorized_by_last_name}`
-        : null, // Devolver nombre completo o null si no hay usuario
-    })),
-    notifications: notificationsResult.rows,
-    invoice: invoiceResult.rows[0] || null,
-  };
-  console.log("[ORDER_SERVICE] Respuesta de getOrderById:", response);
-  return response;
 };
 
 const createOrder = async (orderData) => {
@@ -339,6 +351,23 @@ const updateOrder = async (id, orderData) => {
       throw { status: 404, message: "Orden no encontrada" };
     }
 
+    // Validar datos de entrada
+    if (
+      vehicle_economic_number &&
+      String(vehicle_economic_number).length > 10
+    ) {
+      throw {
+        status: 400,
+        message: "El número económico no puede exceder los 10 caracteres",
+      };
+    }
+    if (branch && String(branch).length > 10) {
+      throw {
+        status: 400,
+        message: "La sucursal no puede exceder los 10 caracteres",
+      };
+    }
+
     const updates = [];
     const values = [id];
     let paramIndex = 2;
@@ -370,11 +399,46 @@ const updateOrder = async (id, orderData) => {
       for (const part of parts) {
         if (
           !part.part_id ||
+          String(part.part_id).length > 10 ||
           !part.quantity ||
           !part.requested_by ||
+          String(part.requested_by).length > 10 ||
           !part.price
         ) {
-          throw { status: 400, message: "Datos de repuesto inválidos" };
+          throw {
+            status: 400,
+            message: `Datos de repuesto inválidos: ${JSON.stringify(part)}`,
+          };
+        }
+        // Validar que requested_by exista en la tabla users
+        const userResult = await client.query(
+          "SELECT id FROM users WHERE id = $1",
+          [part.requested_by]
+        );
+        if (!userResult.rows.length) {
+          throw {
+            status: 400,
+            message: `Usuario con ID ${part.requested_by} no encontrado`,
+          };
+        }
+        // Validar authorized_by si está presente
+        if (part.authorized_by) {
+          if (String(part.authorized_by).length > 10) {
+            throw {
+              status: 400,
+              message: `ID de usuario autorizado excede el límite de 10 caracteres: ${part.authorized_by}`,
+            };
+          }
+          const authUserResult = await client.query(
+            "SELECT id FROM users WHERE id = $1",
+            [part.authorized_by]
+          );
+          if (!authUserResult.rows.length) {
+            throw {
+              status: 400,
+              message: `Usuario autorizado con ID ${part.authorized_by} no encontrado`,
+            };
+          }
         }
         const existingPart = await client.query(
           "SELECT * FROM order_parts WHERE order_id = $1 AND part_id = $2",
@@ -460,18 +524,28 @@ const updateOrder = async (id, orderData) => {
 
     // Actualizar kilometraje del vehículo si se proporciona
     if (kilometraje && vehicle_economic_number && branch) {
-      await client.query(
-        "UPDATE vehicles SET mileage = $1 WHERE economic_number = $2 AND branch = $3",
+      const vehicleResult = await client.query(
+        "UPDATE vehicles SET mileage = $1 WHERE economic_number = $2 AND branch = $3 RETURNING *",
         [kilometraje, vehicle_economic_number, branch]
       );
+      if (!vehicleResult.rows.length) {
+        throw {
+          status: 400,
+          message: `Vehículo con economic_number ${vehicle_economic_number} y branch ${branch} no encontrado`,
+        };
+      }
     }
 
     // Actualizar la orden si hay cambios
+    let updatedOrder;
     if (updates.length > 0) {
       const query = `UPDATE orders SET ${updates.join(
         ", "
       )} WHERE id = $1 RETURNING *`;
       const result = await client.query(query, values);
+      updatedOrder = result.rows[0];
+    } else {
+      updatedOrder = orderResult.rows[0];
     }
 
     await client.query("COMMIT");
@@ -479,13 +553,18 @@ const updateOrder = async (id, orderData) => {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("[ORDER_SERVICE] Error al actualizar orden:", err);
-    throw err.status
-      ? err
-      : {
-          status: 500,
-          message: "Error al actualizar orden",
-          details: err.message,
-        };
+    if (err.code === "22001") {
+      throw {
+        status: 400,
+        message: `El valor proporcionado es demasiado largo para una columna (máximo 10 caracteres). Detalles: ${err.message}`,
+        details: err.stack,
+      };
+    }
+    throw {
+      status: err.status || 500,
+      message: err.message || "Error al actualizar orden",
+      details: err.stack || err.message,
+    };
   } finally {
     client.release();
   }
