@@ -129,6 +129,36 @@ const getOrderById = async (id) => {
   }
 };
 
+const getOrderCounts = async (technician_id) => {
+  let query = `
+    SELECT 
+      COUNT(*) FILTER (WHERE status = 'En Proceso') AS in_process,
+      COUNT(*) FILTER (WHERE status = 'Pendiente') AS pending,
+      COUNT(*) FILTER (WHERE status = 'Finalizado') AS completed
+    FROM orders
+    WHERE 1=1
+  `;
+  const values = [];
+
+  if (technician_id) {
+    query += " AND technician_id = $1";
+    values.push(technician_id);
+  }
+
+  try {
+    const result = await pool.query(query, values);
+    console.log("[ORDER_SERVICE] Conteos obtenidos:", result.rows[0]);
+    return {
+      inProcess: parseInt(result.rows[0].in_process, 10) || 0,
+      pending: parseInt(result.rows[0].pending, 10) || 0,
+      completed: parseInt(result.rows[0].completed, 10) || 0,
+    };
+  } catch (err) {
+    console.error("[ORDER_SERVICE] Error al obtener conteos:", err);
+    throw { status: 500, message: "Error al obtener conteos de órdenes" };
+  }
+};
+
 const createOrder = async (orderData) => {
   const {
     type,
@@ -1063,6 +1093,7 @@ const requestPartReturn = async (orderId, partId, quantity) => {
 module.exports = {
   getOrders,
   getOrderById,
+  getOrderCounts,
   createOrder,
   updateOrder,
   updateOrderStatus,

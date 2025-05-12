@@ -9,7 +9,6 @@ const path = require("path");
 const pool = require("../config/database");
 const notificationService = require("../services/notificationService");
 
-// Configuración de multer
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, "uploads/");
@@ -38,7 +37,6 @@ const upload = multer({
   },
 }).array("images", 10);
 
-// Middleware para hacer que los archivos sean opcionales
 const optionalUpload = (req, res, next) => {
   upload(req, res, (err) => {
     if (err instanceof multer.MulterError) {
@@ -54,6 +52,7 @@ const optionalUpload = (req, res, next) => {
   });
 };
 
+router.get("/counts", authenticateToken, orderController.getOrderCounts);
 router.get("/", authenticateToken, orderController.getOrders);
 router.get("/:id", authenticateToken, orderController.getOrderById);
 router.post(
@@ -63,7 +62,6 @@ router.post(
   optionalUpload,
   orderController.createOrder
 );
-
 router.put(
   "/:id",
   authenticateToken,
@@ -71,14 +69,12 @@ router.put(
   optionalUpload,
   orderController.updateOrder
 );
-
 router.post(
   "/:id/parts",
   authenticateToken,
   restrictTo("technician"),
   orderController.requestPart
 );
-
 router.put(
   "/:id/parts/:partId",
   authenticateToken,
@@ -90,8 +86,6 @@ router.put(
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-
-        // Actualizar el repuesto incluyendo authorized_by
         const updateQuery = `
           UPDATE order_parts
           SET quantity = $1, status = $2, price = $3, authorized_by = $4
@@ -102,7 +96,7 @@ router.put(
           quantity,
           status,
           price || null,
-          authorized_by || null, // Guardar authorized_by o NULL si no se proporciona
+          authorized_by || null,
           id,
           partId,
         ];
@@ -112,7 +106,6 @@ router.put(
           throw { status: 404, message: "Repuesto no encontrado" };
         }
 
-        // Crear notificación si el repuesto es rechazado
         if (status === "Rechazado" && note) {
           const orderResult = await client.query(
             "SELECT technician_id FROM orders WHERE id = $1",
@@ -148,14 +141,12 @@ router.put(
     }
   }
 );
-
 router.post(
   "/:id/parts/:partId/return",
   authenticateToken,
   restrictTo("technician"),
   orderController.requestPartReturn
 );
-
 router.put(
   "/:id/status",
   authenticateToken,
@@ -172,7 +163,6 @@ router.put(
     }
   }
 );
-
 router.put(
   "/:id/numbers",
   authenticateToken,
@@ -183,7 +173,6 @@ router.put(
       const { orderNumber, deliveryNoteNumber, invoiceNumber } = req.body;
       const userRole = req.user.role;
 
-      // Validar permisos
       if (userRole === "secretary" && (orderNumber || deliveryNoteNumber)) {
         return res.status(403).json({
           message:
@@ -196,13 +185,11 @@ router.put(
         });
       }
 
-      // Actualizar order_number si está presente y el usuario es admin
       let updatedOrder = null;
       if (orderNumber && userRole === "admin") {
         updatedOrder = await orderService.updateOrderNumber(id, orderNumber);
       }
 
-      // Actualizar delivery_note_number o invoice_number si están presentes
       let updatedInvoice = null;
       if (deliveryNoteNumber || invoiceNumber) {
         updatedInvoice = await orderService.updateInvoiceNumbers(
@@ -224,7 +211,6 @@ router.put(
     }
   }
 );
-
 router.delete(
   "/:id/images/:imageIndex",
   authenticateToken,

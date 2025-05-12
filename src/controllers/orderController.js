@@ -57,6 +57,17 @@ const getOrderById = async (req, res) => {
   }
 };
 
+const getOrderCounts = async (req, res) => {
+  const { technician_id } = req.query;
+  try {
+    const counts = await orderService.getOrderCounts(technician_id);
+    res.json(counts);
+  } catch (error) {
+    console.error("[orderController] Error en getOrderCounts:", error);
+    res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
 const createOrder = async (req, res) => {
   const {
     type,
@@ -406,6 +417,7 @@ const finalizeOrder = async (req, res) => {
 module.exports = {
   getOrders,
   getOrderById,
+  getOrderCounts,
   createOrder,
   updateOrder,
   requestPart,
