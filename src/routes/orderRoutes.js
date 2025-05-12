@@ -18,6 +18,7 @@ const storage = multer.diskStorage({
     cb(null, `${Date.now()}-${file.originalname}`);
   },
 });
+
 const upload = multer({
   storage,
   limits: {
@@ -62,6 +63,7 @@ router.post(
   optionalUpload,
   orderController.createOrder
 );
+
 router.put(
   "/:id",
   authenticateToken,
@@ -69,12 +71,14 @@ router.put(
   optionalUpload,
   orderController.updateOrder
 );
+
 router.post(
   "/:id/parts",
   authenticateToken,
   restrictTo("technician"),
   orderController.requestPart
 );
+
 router.put(
   "/:id/parts/:partId",
   authenticateToken,
@@ -144,6 +148,7 @@ router.put(
     }
   }
 );
+
 router.post(
   "/:id/parts/:partId/return",
   authenticateToken,
@@ -218,6 +223,13 @@ router.put(
       });
     }
   }
+);
+
+router.delete(
+  "/:id/images/:imageIndex",
+  authenticateToken,
+  restrictTo("admin", "technician"),
+  orderController.deleteOrderImage
 );
 
 module.exports = router;

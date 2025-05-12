@@ -3,15 +3,30 @@ const notificationService = require("../services/notificationService");
 const pool = require("../config/database");
 
 const getOrders = async (req, res) => {
-  const { status, economicNumber, orderNumber, technician_id } = req.query;
+  const {
+    status,
+    economicNumber,
+    orderNumber,
+    technician_id,
+    page = 1,
+    limit = 10,
+  } = req.query;
   try {
-    const orders = await orderService.getOrders(
+    const result = await orderService.getOrders(
       status,
       economicNumber,
       orderNumber,
-      technician_id
+      technician_id,
+      parseInt(page),
+      parseInt(limit)
     );
-    res.json(orders);
+    res.json({
+      orders: result.orders,
+      total: result.total,
+      totalPages: result.totalPages,
+      page: parseInt(page),
+      limit: parseInt(limit),
+    });
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message });
   }
@@ -54,7 +69,7 @@ const createOrder = async (req, res) => {
     branch,
     parts,
   } = req.body;
-  const images = req.files?.map((file) => file.path) || [];
+  const images = req.files?.map((file) => `/uploads/${file.filename}`) || [];
   try {
     console.log("Datos recibidos en createOrder:", {
       body: req.body,
@@ -119,11 +134,12 @@ const updateOrder = async (req, res) => {
   const { id } = req.params;
   try {
     console.log("Datos recibidos en updateOrder:", req.body, req.files);
-    const newImages = req.files?.map((file) => file.path) || [];
+    const newImages =
+      req.files?.map((file) => `/uploads/${file.filename}`) || [];
     const existingImages = req.body.existingImages
       ? Array.isArray(req.body.existingImages)
         ? req.body.existingImages
-        : [req.body.existingImages]
+        : JSON.parse(req.body.existingImages)
       : [];
     const images = [...existingImages, ...newImages];
     let parts = [];
@@ -245,6 +261,30 @@ const requestPartReturn = async (req, res) => {
   }
 };
 
+const deleteOrderImage = async (req, res) => {
+  const { id, imageIndex } = req.params;
+  try {
+    const order = await orderService.getOrderById(id);
+    if (!order) {
+      return res.status(404).json({ message: "Orden no encontrada" });
+    }
+    if (!order.images || order.images.length <= imageIndex) {
+      return res.status(400).json({ message: "Índice de imagen inválido" });
+    }
+
+    const updatedImages = order.images.filter(
+      (_, index) => index !== parseInt(imageIndex)
+    );
+    const updatedOrder = await orderService.updateOrder(id, {
+      images: updatedImages,
+    });
+    res.json({ message: "Imagen eliminada exitosamente", order: updatedOrder });
+  } catch (error) {
+    console.error("Error en deleteOrderImage controller:", error);
+    res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
 const finalizeOrder = async (req, res) => {
   const { id } = req.params;
   const { action, note, status } = req.body;
@@ -329,5 +369,6 @@ module.exports = {
   requestPart,
   updatePartQuantity,
   requestPartReturn,
+  deleteOrderImage,
   finalizeOrder,
 };
