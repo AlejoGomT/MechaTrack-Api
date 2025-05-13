@@ -5,9 +5,12 @@ const getOrders = async (
   status,
   economicNumber,
   orderNumber,
+  serviceType,
   technician_id,
   page = 1,
-  limit = 10
+  limit = 10,
+  startDate,
+  endDate
 ) => {
   let query = `
     SELECT o.*, v.branch, v.plate, v.brand, v.model, v.year, v.mileage, 
@@ -32,6 +35,18 @@ const getOrders = async (
   if (technician_id) {
     query += " AND o.technician_id = $" + (values.length + 1);
     values.push(technician_id);
+  }
+  if (serviceType) {
+    query += " AND o.type >= $" + (values.length + 1);
+    values.push(serviceType);
+  }
+  if (startDate) {
+    query += " AND o.created_at >= $" + (values.length + 1);
+    values.push(startDate);
+  }
+  if (endDate) {
+    query += " AND o.created_at <= $" + (values.length + 1);
+    values.push(endDate);
   }
   query += ` ORDER BY o.created_at DESC LIMIT $${values.length + 1} OFFSET $${
     values.length + 2
@@ -71,7 +86,6 @@ const getOrderById = async (id) => {
       "SELECT * FROM order_history WHERE order_id = $1",
       [id]
     );
-    // Modificar la consulta para incluir nombres completos y IDs
     const partsResult = await client.query(
       `
       SELECT op.*, p.name,
@@ -107,14 +121,14 @@ const getOrderById = async (id) => {
         quantity: part.quantity,
         price: part.price,
         status: part.status,
-        requested_by_id: part.requested_by_id || null, // ID del usuario que solicitó
+        requested_by_id: part.requested_by_id || null,
         requested_by: part.requested_by_first_name
           ? `${part.requested_by_first_name} ${part.requested_by_last_name}`
-          : "Técnico", // Nombre completo para admin
-        authorized_by_id: part.authorized_by_id || null, // ID del usuario que autorizó
+          : "Técnico",
+        authorized_by_id: part.authorized_by_id || null,
         authorized_by: part.authorized_by_first_name
           ? `${part.authorized_by_first_name} ${part.authorized_by_last_name}`
-          : null, // Nombre completo para admin
+          : null,
       })),
       notifications: notificationsResult.rows,
       invoice: invoiceResult.rows[0] || null,
@@ -173,7 +187,6 @@ const createOrder = async (orderData) => {
     parts,
   } = orderData;
 
-  // Validar datos de entrada
   if (
     !type ||
     !description ||
@@ -195,7 +208,6 @@ const createOrder = async (orderData) => {
     await client.query("BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE");
     console.log("[ORDER_SERVICE] Transacción iniciada con SERIALIZABLE");
 
-    // Validar vehículo
     const vehicleResult = await client.query(
       "SELECT * FROM vehicles WHERE economic_number = $1 AND branch = $2",
       [vehicle_economic_number, branch]
@@ -208,7 +220,6 @@ const createOrder = async (orderData) => {
       throw { status: 400, message: "Vehículo no encontrado en la sucursal" };
     }
 
-    // Validar órdenes activas
     const activeOrderResult = await client.query(
       "SELECT * FROM orders WHERE vehicle_economic_number = $1 AND status = $2",
       [vehicle_economic_number, "En Proceso"]
@@ -224,13 +235,11 @@ const createOrder = async (orderData) => {
       };
     }
 
-    // Generar nuevo ID usando la secuencia
     const idResult = await client.query(
       "SELECT nextval('orders_id_seq') AS new_id"
     );
     const newId = idResult.rows[0].new_id.toString().padStart(3, "0");
 
-    // Insertar orden
     const query = `
       INSERT INTO orders (id, type, description, initial_diagnosis, tasks, images, technician_id, vehicle_economic_number, status, created_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -252,7 +261,6 @@ const createOrder = async (orderData) => {
     const result = await client.query(query, values);
     const order = result.rows[0];
 
-    // Verificar que la orden existe
     const verifyOrder = await client.query(
       "SELECT id FROM orders WHERE id = $1",
       [newId]
@@ -265,7 +273,6 @@ const createOrder = async (orderData) => {
       };
     }
 
-    // Insertar repuestos si existen
     let notificationParts = [];
     if (parts && Array.isArray(parts) && parts.length > 0) {
       const partQuery = `
@@ -311,7 +318,6 @@ const createOrder = async (orderData) => {
       }
     }
 
-    // Crear notificación para repuestos
     if (notificationParts.length > 0) {
       const adminResult = await client.query(
         "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
@@ -337,7 +343,6 @@ const createOrder = async (orderData) => {
       );
     }
 
-    // Actualizar kilometraje del vehículo
     await client.query(
       "UPDATE vehicles SET mileage = $1 WHERE economic_number = $2 AND branch = $3",
       [kilometraje, vehicle_economic_number, branch]
@@ -381,7 +386,6 @@ const updateOrder = async (id, orderData) => {
       throw { status: 404, message: "Orden no encontrada" };
     }
 
-    // Validar datos de entrada
     if (
       vehicle_economic_number &&
       String(vehicle_economic_number).length > 10
@@ -423,7 +427,6 @@ const updateOrder = async (id, orderData) => {
       paramIndex++;
     }
 
-    // Procesar repuestos
     let notificationParts = [];
     if (parts && Array.isArray(parts) && parts.length > 0) {
       for (const part of parts) {
@@ -440,7 +443,6 @@ const updateOrder = async (id, orderData) => {
             message: `Datos de repuesto inválidos: ${JSON.stringify(part)}`,
           };
         }
-        // Validar que requested_by exista en la tabla users
         const userResult = await client.query(
           "SELECT id FROM users WHERE id = $1",
           [part.requested_by]
@@ -451,7 +453,6 @@ const updateOrder = async (id, orderData) => {
             message: `Usuario con ID ${part.requested_by} no encontrado`,
           };
         }
-        // Validar authorized_by si está presente
         if (part.authorized_by) {
           if (String(part.authorized_by).length > 10) {
             throw {
@@ -526,7 +527,6 @@ const updateOrder = async (id, orderData) => {
       }
     }
 
-    // Crear notificaciones para nuevos repuestos
     if (notificationParts.length > 0) {
       const adminResult = await client.query(
         "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
@@ -552,7 +552,6 @@ const updateOrder = async (id, orderData) => {
       );
     }
 
-    // Actualizar kilometraje del vehículo si se proporciona
     if (kilometraje && vehicle_economic_number && branch) {
       const vehicleResult = await client.query(
         "UPDATE vehicles SET mileage = $1 WHERE economic_number = $2 AND branch = $3 RETURNING *",
@@ -566,7 +565,6 @@ const updateOrder = async (id, orderData) => {
       }
     }
 
-    // Actualizar la orden si hay cambios
     let updatedOrder;
     if (updates.length > 0) {
       const query = `UPDATE orders SET ${updates.join(
@@ -579,7 +577,7 @@ const updateOrder = async (id, orderData) => {
     }
 
     await client.query("COMMIT");
-    return await getOrderById(id); // Devolver la orden actualizada
+    return await getOrderById(id);
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("[ORDER_SERVICE] Error al actualizar orden:", err);
@@ -609,7 +607,6 @@ const updateOrderStatus = async (id, status) => {
       id
     );
 
-    // Verificar que la orden existe
     const orderResult = await client.query(
       "SELECT * FROM orders WHERE id = $1",
       [id]
@@ -620,7 +617,6 @@ const updateOrderStatus = async (id, status) => {
     }
     console.log("[ORDER_SERVICE] Orden encontrada:", orderResult.rows[0]);
 
-    // Actualizar el estado
     const query = `
       UPDATE orders
       SET status = $1, updated_at = $2
@@ -636,7 +632,6 @@ const updateOrderStatus = async (id, status) => {
     const result = await client.query(query, values);
     console.log("[ORDER_SERVICE] Orden actualizada:", result.rows[0]);
 
-    // Crear notificación si el estado es Pendiente
     if (status === "Pendiente") {
       const adminResult = await client.query(
         "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
@@ -759,7 +754,6 @@ const updateInvoiceNumbers = async (
       orderId
     );
 
-    // Verificar que la orden existe
     const orderResult = await client.query(
       "SELECT * FROM orders WHERE id = $1",
       [orderId]
@@ -769,14 +763,12 @@ const updateInvoiceNumbers = async (
       throw { status: 404, message: "Orden no encontrada" };
     }
 
-    // Verificar si ya existe un registro en invoices
     let invoiceResult = await client.query(
       "SELECT * FROM invoices WHERE order_id = $1",
       [orderId]
     );
 
     if (!invoiceResult.rows.length) {
-      // Crear un nuevo registro en invoices si no existe
       const insertQuery = `
         INSERT INTO invoices (order_id, issued_by, issued_at)
         VALUES ($1, $2, $3)
@@ -794,7 +786,6 @@ const updateInvoiceNumbers = async (
       );
     }
 
-    // Actualizar delivery_note_number y/o invoice_number
     const updateQuery = `
       UPDATE invoices
       SET
@@ -846,7 +837,6 @@ const requestPart = async (orderId, part) => {
       orderId
     );
 
-    // Verificar que la orden existe
     const orderResult = await client.query(
       "SELECT technician_id FROM orders WHERE id = $1",
       [orderId]
@@ -858,13 +848,11 @@ const requestPart = async (orderId, part) => {
     const technicianId = orderResult.rows[0].technician_id;
     console.log("[ORDER_SERVICE] Técnico encontrado:", technicianId);
 
-    // Validar datos del repuesto
     if (!part.part_id || !part.quantity || !part.requested_by || !part.price) {
       console.error("[ORDER_SERVICE] Datos de repuesto inválidos:", part);
       throw { status: 400, message: "Datos de repuesto inválidos" };
     }
 
-    // Insertar el repuesto
     const partQuery = `
       INSERT INTO order_parts (
         order_id, part_id, quantity, price, status, requested_by, authorized_by
@@ -881,37 +869,27 @@ const requestPart = async (orderId, part) => {
       part.requested_by,
       part.authorized_by || null,
     ];
-    console.log("[ORDER_SERVICE] Insertando repuesto con valores:", partValues);
     const partResult = await client.query(partQuery, partValues);
-    console.log("[ORDER_SERVICE] Repuesto insertado:", partResult.rows[0]);
 
-    // Crear notificación para el repuesto solicitado
     const adminResult = await client.query(
       "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
     );
     if (!adminResult.rows.length) {
-      console.error("[ORDER_SERVICE] No se encontró un usuario administrador");
       throw { status: 500, message: "No se encontró un usuario administrador" };
     }
     const adminId = adminResult.rows[0].id;
-    console.log("[ORDER_SERVICE] Admin encontrado:", adminId);
 
     const partNameResult = await client.query(
       "SELECT name FROM parts WHERE id = $1",
       [part.part_id]
     );
     if (!partNameResult.rows.length) {
-      console.error(
-        "[ORDER_SERVICE] Repuesto no encontrado con ID:",
-        part.part_id
-      );
       throw {
         status: 400,
         message: `Repuesto con ID ${part.part_id} no encontrado`,
       };
     }
     const partName = partNameResult.rows[0].name || "Repuesto desconocido";
-    console.log("[ORDER_SERVICE] Nombre del repuesto:", partName);
 
     await notificationService.createNotification(
       {
@@ -924,17 +902,12 @@ const requestPart = async (orderId, part) => {
       },
       client
     );
-    console.log("[ORDER_SERVICE] Notificación creada para orden:", orderId);
 
     await client.query("COMMIT");
-    console.log(
-      "[ORDER_SERVICE] Transacción completada para requestPart:",
-      orderId
-    );
+
     return partResult.rows[0];
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error("[ORDER_SERVICE] Error al solicitar repuesto:", err);
     throw err.status
       ? err
       : {
@@ -944,7 +917,6 @@ const requestPart = async (orderId, part) => {
         };
   } finally {
     client.release();
-    console.log("[ORDER_SERVICE] Cliente de base de datos liberado");
   }
 };
 
@@ -952,40 +924,22 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    console.log(
-      "[ORDER_SERVICE] Transacción iniciada para updatePartQuantity:",
-      orderId,
-      partId
-    );
 
     if (quantity === 0) {
       await client.query(
         "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2",
         [orderId, partId]
       );
-      console.log("[ORDER_SERVICE] Repuesto eliminado:", { orderId, partId });
     } else {
       await client.query(
         "UPDATE order_parts SET quantity = $1 WHERE order_id = $2 AND part_id = $3",
         [quantity, orderId, partId]
       );
-      console.log("[ORDER_SERVICE] Cantidad de repuesto actualizada:", {
-        orderId,
-        partId,
-        quantity,
-      });
     }
 
     await client.query("COMMIT");
-    console.log(
-      "[ORDER_SERVICE] Transacción completada para updatePartQuantity"
-    );
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error(
-      "[ORDER_SERVICE] Error al actualizar cantidad de repuesto:",
-      err
-    );
     throw err.status
       ? err
       : {
@@ -995,7 +949,6 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
         };
   } finally {
     client.release();
-    console.log("[ORDER_SERVICE] Cliente de base de datos liberado");
   }
 };
 
@@ -1003,11 +956,6 @@ const requestPartReturn = async (orderId, partId, quantity) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    console.log(
-      "[ORDER_SERVICE] Transacción iniciada para requestPartReturn:",
-      orderId,
-      partId
-    );
 
     await client.query(
       `
@@ -1016,10 +964,6 @@ const requestPartReturn = async (orderId, partId, quantity) => {
       WHERE order_id = $3 AND part_id = $4
     `,
       ["Devolución Solicitada", quantity, orderId, partId]
-    );
-    console.log(
-      "[ORDER_SERVICE] Estado de repuesto actualizado a Devolución Solicitada:",
-      { orderId, partId }
     );
 
     const orderResult = await client.query(

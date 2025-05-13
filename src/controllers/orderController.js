@@ -10,15 +10,21 @@ const getOrders = async (req, res) => {
     technician_id,
     page = 1,
     limit = 10,
+    serviceType,
+    startDate,
+    endDate,
   } = req.query;
   try {
     const result = await orderService.getOrders(
       status,
       economicNumber,
       orderNumber,
+      serviceType,
       technician_id,
       parseInt(page),
-      parseInt(limit)
+      parseInt(limit),
+      startDate,
+      endDate
     );
     res.json({
       orders: result.orders,
