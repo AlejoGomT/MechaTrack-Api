@@ -846,7 +846,6 @@ const requestPart = async (orderId, part) => {
       throw { status: 404, message: "Orden no encontrada" };
     }
     const technicianId = orderResult.rows[0].technician_id;
-    console.log("[ORDER_SERVICE] Técnico encontrado:", technicianId);
 
     if (!part.part_id || !part.quantity || !part.requested_by || !part.price) {
       console.error("[ORDER_SERVICE] Datos de repuesto inválidos:", part);
@@ -899,12 +898,16 @@ const requestPart = async (orderId, part) => {
         message: `Solicitud de repuesto: ${partName} (${part.quantity})`,
         type: "part_request",
         status: "Pendiente",
+        details: {
+          part_id: part.part_id,
+          quantity: part.quantity,
+          price: part.price,
+        },
       },
       client
     );
 
     await client.query("COMMIT");
-
     return partResult.rows[0];
   } catch (err) {
     await client.query("ROLLBACK");

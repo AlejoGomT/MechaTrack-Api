@@ -1,4 +1,35 @@
 const notificationService = require("../services/notificationService");
+const pool = require("../config/database");
+const multer = require("multer");
+const path = require("path");
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/");
+  },
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}-${file.originalname}`);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB límite
+    files: 5, // Máximo 5 archivos
+  },
+  fileFilter: (req, file, cb) => {
+    const filetypes = /jpeg|jpg|png|pdf/;
+    const extname = filetypes.test(
+      path.extname(file.originalname).toLowerCase()
+    );
+    const mimetype = filetypes.test(file.mimetype);
+    if (extname && mimetype) {
+      return cb(null, true);
+    }
+    cb(new Error("Solo se permiten imágenes JPEG/JPG/PNG o PDFs"));
+  },
+}).array("attachments", 5);
 
 const getNotifications = async (req, res) => {
   const { to_user_id, status } = req.query;
@@ -19,6 +50,94 @@ const getNotifications = async (req, res) => {
     );
     res.status(error.status || 500).json({
       message: error.message || "Error al obtener notificaciones",
+      details: error.stack,
+    });
+  }
+};
+
+const createNotification = async (req, res) => {
+  upload(req, res, async (err) => {
+    if (err instanceof multer.MulterError) {
+      return res
+        .status(400)
+        .json({ message: `Error de multer: ${err.message}` });
+    } else if (err) {
+      return res.status(400).json({ message: err.message });
+    }
+
+    const { order_id, to_user_id, message, type, status, details } = req.body;
+    const from_user_id = req.user.id;
+
+    try {
+      const notificationData = {
+        order_id,
+        from_user_id,
+        to_user_id,
+        message,
+        type: type || "message",
+        status: status || "Pendiente",
+        details: details ? JSON.parse(details) : null,
+      };
+
+      const notification = await notificationService.createNotification(
+        notificationData
+      );
+
+      // Manejar adjuntos
+      if (req.files && req.files.length > 0) {
+        for (const file of req.files) {
+          await notificationService.createAttachment(
+            notification.id,
+            `/uploads/${file.filename}`,
+            file.mimetype
+          );
+        }
+      }
+
+      console.log(
+        "[notificationController] Notificación creada:",
+        notification
+      );
+      res.status(201).json(notification);
+    } catch (error) {
+      console.error(
+        "[notificationController] Error al crear notificación:",
+        error
+      );
+      res.status(error.status || 500).json({
+        message: error.message || "Error al crear notificación",
+        details: error.stack,
+      });
+    }
+  });
+};
+
+const getConversations = async (req, res) => {
+  const { user_id } = req.user; // Obtener user_id del token
+  try {
+    const query = `
+      SELECT c.*
+      FROM conversations c
+      JOIN notifications n ON c.order_id = n.order_id
+      WHERE n.to_user_id = $1 OR n.from_user_id = $1
+      GROUP BY c.order_id, c.vehicle_economic_number, c.order_status,
+               c.last_message_at, c.total_messages, c.unread_messages,
+               c.senders, c.recipients
+      ORDER BY c.last_message_at DESC
+    `;
+    const result = await pool.query(query, [user_id]);
+    console.log(
+      "[notificationController] Conversaciones enviadas:",
+      result.rows.length
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error(
+      "[notificationController] Error al obtener conversaciones:",
+      error
+    );
+    res.status(500).json({
+      message: "Error al obtener conversaciones",
       details: error.stack,
     });
   }
@@ -49,4 +168,9 @@ const updateNotification = async (req, res) => {
   }
 };
 
-module.exports = { getNotifications, updateNotification };
+module.exports = {
+  getNotifications,
+  createNotification,
+  getConversations,
+  updateNotification,
+};
