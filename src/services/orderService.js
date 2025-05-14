@@ -1,5 +1,6 @@
 const pool = require("../config/database");
 const notificationService = require("./notificationService");
+const partService = require("./partService");
 
 const getOrders = async (
   status,
@@ -173,7 +174,6 @@ const getOrderCounts = async (technician_id) => {
   }
 };
 
-// orderService.js
 const createOrder = async (orderData) => {
   const {
     type,
@@ -293,6 +293,29 @@ const createOrder = async (orderData) => {
           console.error("[ORDER_SERVICE] Datos de repuesto inválidos:", part);
           throw { status: 400, message: "Datos de repuesto inválidos" };
         }
+
+        if (part.status === "Aprobado") {
+          const partResult = await client.query(
+            "SELECT quantity FROM parts WHERE id = $1",
+            [part.part_id]
+          );
+          if (!partResult.rows.length) {
+            throw {
+              status: 400,
+              message: `Repuesto con ID ${part.part_id} no encontrado`,
+            };
+          }
+          const availableQuantity = parseInt(partResult.rows[0].quantity, 10);
+          if (part.quantity > availableQuantity) {
+            throw {
+              status: 400,
+              message: `Inventario insuficiente para el repuesto ${part.part_id}. Disponible: ${availableQuantity}, Solicitado: ${part.quantity}`,
+            };
+          }
+
+          await partService.updatePartInventory(part.part_id, part.quantity);
+        }
+
         const partValues = [
           order.id,
           part.part_id,
@@ -508,6 +531,41 @@ const updateOrder = async (id, orderData) => {
             };
           }
         }
+
+        if (part.status === "Aprobado") {
+          const partResult = await client.query(
+            "SELECT quantity FROM parts WHERE id = $1",
+            [part.part_id]
+          );
+          if (!partResult.rows.length) {
+            throw {
+              status: 400,
+              message: `Repuesto con ID ${part.part_id} no encontrado`,
+            };
+          }
+          const availableQuantity = parseInt(partResult.rows[0].quantity, 10);
+
+          const existingPart = await client.query(
+            "SELECT quantity FROM order_parts WHERE order_id = $1 AND part_id = $2",
+            [id, part.part_id]
+          );
+          const previousQuantity = existingPart.rows.length
+            ? parseInt(existingPart.rows[0].quantity, 10)
+            : 0;
+
+          const quantityChange = part.quantity - previousQuantity;
+          if (quantityChange > availableQuantity) {
+            throw {
+              status: 400,
+              message: `Inventario insuficiente para el repuesto ${part.part_id}. Disponible: ${availableQuantity}, Solicitado: ${quantityChange}`,
+            };
+          }
+
+          if (quantityChange > 0) {
+            await partService.updatePartInventory(part.part_id, quantityChange);
+          }
+        }
+
         const existingPart = await client.query(
           "SELECT * FROM order_parts WHERE order_id = $1 AND part_id = $2",
           [id, part.part_id]

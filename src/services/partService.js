@@ -161,4 +161,50 @@ const deletePart = async (id) => {
   }
 };
 
-module.exports = { getParts, createPart, updatePart, deletePart };
+const updatePartInventory = async (partId, quantityChange) => {
+  try {
+    const partResult = await pool.query(
+      "SELECT quantity FROM parts WHERE id = $1",
+      [partId]
+    );
+    if (partResult.rowCount === 0) {
+      throw { status: 404, message: `Repuesto con ID ${partId} no encontrado` };
+    }
+
+    const currentQuantity = parseInt(partResult.rows[0].quantity, 10);
+    const newQuantity = currentQuantity - quantityChange;
+
+    if (newQuantity < 0) {
+      throw {
+        status: 400,
+        message: `Inventario insuficiente para el repuesto ${partId}. Disponible: ${currentQuantity}, Solicitado: ${quantityChange}`,
+      };
+    }
+
+    const query = `
+      UPDATE parts 
+      SET quantity = $1
+      WHERE id = $2
+      RETURNING *
+    `;
+    const values = [newQuantity, partId];
+    console.log("[partService] Actualizando inventario con valores:", values);
+    const result = await pool.query(query, values);
+    console.log("[partService] Inventario actualizado:", result.rows[0]);
+    return result.rows[0];
+  } catch (error) {
+    console.error("[partService] Error al actualizar inventario:", error);
+    throw {
+      status: error.status || 500,
+      message: `Error al actualizar inventario: ${error.message}`,
+    };
+  }
+};
+
+module.exports = {
+  getParts,
+  createPart,
+  updatePart,
+  deletePart,
+  updatePartInventory,
+};

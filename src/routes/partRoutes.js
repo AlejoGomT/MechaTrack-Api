@@ -76,5 +76,11 @@ router.delete(
   restrictTo("admin"),
   partController.deletePart
 );
+router.put(
+  "/:id/inventory",
+  authenticateToken,
+  restrictTo("admin", "technician"),
+  partController.updatePartInventory
+);
 
 module.exports = router;
