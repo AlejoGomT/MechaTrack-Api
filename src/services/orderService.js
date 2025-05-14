@@ -173,6 +173,7 @@ const getOrderCounts = async (technician_id) => {
   }
 };
 
+// orderService.js
 const createOrder = async (orderData) => {
   const {
     type,
@@ -342,6 +343,42 @@ const createOrder = async (orderData) => {
         client
       );
     }
+
+    // Crear notificación de orden creada para el admin
+    const adminResult = await client.query(
+      "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
+    );
+    if (!adminResult.rows.length) {
+      throw {
+        status: 500,
+        message: "No se encontró un usuario administrador",
+      };
+    }
+    const adminId = adminResult.rows[0].id;
+
+    const technicianResult = await client.query(
+      "SELECT first_name, last_name FROM users WHERE id = $1",
+      [technician_id]
+    );
+    const technicianName = technicianResult.rows[0]
+      ? `${technicianResult.rows[0].first_name} ${technicianResult.rows[0].last_name}`
+      : technician_id;
+
+    await notificationService.createNotification(
+      {
+        order_id: order.id,
+        from_user_id: technician_id,
+        to_user_id: adminId,
+        message: `Nueva orden #${order.id} creada por el técnico ${technicianName}`,
+        type: "order_creation",
+        status: "Pendiente",
+        details: {
+          vehicle_economic_number,
+          description,
+        },
+      },
+      client
+    );
 
     await client.query(
       "UPDATE vehicles SET mileage = $1 WHERE economic_number = $2 AND branch = $3",

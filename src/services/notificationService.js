@@ -1,6 +1,6 @@
 const pool = require("../config/database");
 
-const getNotifications = async (to_user_id, status) => {
+const getNotifications = async ({ to_user_id, status, order_id, user_id }) => {
   try {
     let query = `
       SELECT n.*, 
@@ -17,18 +17,30 @@ const getNotifications = async (to_user_id, status) => {
     const values = [];
     let paramIndex = 1;
 
+    if (order_id) {
+      query += ` AND n.order_id = $${paramIndex}`;
+      values.push(order_id);
+      paramIndex++;
+      // Filtrar solo mensajes de tipo 'message' o 'order_creation' cuando se solicita por order_id
+      query += ` AND n.type IN ('message', 'order_creation')`;
+    }
+    if (user_id) {
+      query += ` AND (n.to_user_id = $${paramIndex} OR n.from_user_id = $${paramIndex})`;
+      values.push(user_id);
+      paramIndex++;
+    }
     if (to_user_id) {
-      query += ` AND to_user_id = $${paramIndex}`;
+      query += ` AND n.to_user_id = $${paramIndex}`;
       values.push(to_user_id);
       paramIndex++;
     }
     if (status) {
-      query += ` AND status = $${paramIndex}`;
+      query += ` AND n.status = $${paramIndex}`;
       values.push(status);
       paramIndex++;
     }
 
-    query += " GROUP BY n.id ORDER BY n.created_at DESC";
+    query += " GROUP BY n.id ORDER BY n.created_at ASC";
 
     console.log(
       "[notificationService] Consulta para getNotifications:",
@@ -37,7 +49,9 @@ const getNotifications = async (to_user_id, status) => {
     );
     const result = await pool.query(query, values);
     console.log(
-      "[notificationService] Notificaciones obtenidas:",
+      "[notificationService] Notificaciones obtenidas para order_id",
+      order_id || "todos",
+      ":",
       result.rows.length
     );
     return result.rows;

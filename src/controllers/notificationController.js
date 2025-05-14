@@ -32,14 +32,18 @@ const upload = multer({
 }).array("attachments", 5);
 
 const getNotifications = async (req, res) => {
-  const { to_user_id, status } = req.query;
+  const { to_user_id, status, order_id, user_id } = req.query;
   try {
-    const notifications = await notificationService.getNotifications(
+    const notifications = await notificationService.getNotifications({
       to_user_id,
-      status
-    );
+      status,
+      order_id,
+      user_id,
+    });
     console.log(
-      "[notificationController] Notificaciones enviadas:",
+      "[notificationController] Notificaciones enviadas para order_id",
+      order_id || "todos",
+      ":",
       notifications.length
     );
     res.json(notifications);
@@ -83,7 +87,6 @@ const createNotification = async (req, res) => {
         notificationData
       );
 
-      // Manejar adjuntos
       if (req.files && req.files.length > 0) {
         for (const file of req.files) {
           await notificationService.createAttachment(
@@ -113,22 +116,39 @@ const createNotification = async (req, res) => {
 };
 
 const getConversations = async (req, res) => {
-  const { user_id } = req.user; // Obtener user_id del token
+  const user_id = req.query.user_id || req.user.user_id;
+  if (!user_id) {
+    return res.status(400).json({ message: "user_id es requerido" });
+  }
   try {
     const query = `
-      SELECT c.*
+      SELECT DISTINCT
+        c.order_id,
+        c.vehicle_economic_number,
+        c.order_status,
+        c.last_message_at,
+        c.total_messages,
+        COUNT(CASE WHEN n.status = 'Pendiente' AND n.to_user_id = $1 THEN 1 END) AS unread_messages,
+        c.senders,
+        c.recipients
       FROM conversations c
       JOIN notifications n ON c.order_id = n.order_id
-      WHERE n.to_user_id = $1 OR n.from_user_id = $1
-      GROUP BY c.order_id, c.vehicle_economic_number, c.order_status,
-               c.last_message_at, c.total_messages, c.unread_messages,
-               c.senders, c.recipients
+      WHERE (n.to_user_id = $1 OR n.from_user_id = $1)
+        AND c.order_status IN ('En Proceso', 'Pendiente')
+      GROUP BY 
+        c.order_id,
+        c.vehicle_economic_number,
+        c.order_status,
+        c.last_message_at,
+        c.total_messages,
+        c.senders,
+        c.recipients
       ORDER BY c.last_message_at DESC
     `;
     const result = await pool.query(query, [user_id]);
     console.log(
       "[notificationController] Conversaciones enviadas:",
-      result.rows.length
+      result.rows
     );
     res.json(result.rows);
   } catch (error) {
