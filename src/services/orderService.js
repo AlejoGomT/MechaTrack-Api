@@ -274,7 +274,6 @@ const createOrder = async (orderData) => {
       };
     }
 
-    let notificationParts = [];
     if (parts && Array.isArray(parts) && parts.length > 0) {
       const partQuery = `
         INSERT INTO order_parts (
@@ -321,36 +320,8 @@ const createOrder = async (orderData) => {
           part.requested_by,
           part.authorized_by || null,
         ];
-        const partInsertResult = await client.query(partQuery, partValues);
-
-        const partName = partResult.rows[0].name || "Repuesto desconocido";
-        notificationParts.push(`${partName} (${part.quantity})`);
+        await client.query(partQuery, partValues);
       }
-    }
-
-    if (notificationParts.length > 0) {
-      const adminResult = await client.query(
-        "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
-      );
-      if (!adminResult.rows.length) {
-        throw {
-          status: 500,
-          message: "No se encontró un usuario administrador",
-        };
-      }
-      const adminId = adminResult.rows[0].id;
-
-      await notificationService.createNotification(
-        {
-          order_id: order.id,
-          from_user_id: technician_id,
-          to_user_id: adminId,
-          message: `Solicitud de repuestos: ${notificationParts.join(", ")}`,
-          type: "part_request",
-          status: "Pendiente",
-        },
-        client
-      );
     }
 
     const adminResult = await client.query(
@@ -472,7 +443,6 @@ const updateOrder = async (id, orderData) => {
       paramIndex++;
     }
 
-    let notificationParts = [];
     if (parts && Array.isArray(parts) && parts.length > 0) {
       const currentPartsResult = await client.query(
         "SELECT part_id, status FROM order_parts WHERE order_id = $1",
@@ -539,9 +509,8 @@ const updateOrder = async (id, orderData) => {
           };
         }
         const partPrice = partResult.rows[0].price;
-        const partName = partResult.rows[0].name || "Repuesto desconocido";
 
-        if (part.status === "Aprogabado") {
+        if (part.status === "Aprobado") {
           const availableQuantity = parseInt(
             partResult.rows[0].available_quantity,
             10
@@ -578,7 +547,7 @@ const updateOrder = async (id, orderData) => {
           `,
             [
               part.quantity,
-              partPrice, // Usar precio de parts
+              partPrice,
               part.status || "Solicitado",
               part.requested_by,
               part.authorized_by || null,
@@ -605,8 +574,6 @@ const updateOrder = async (id, orderData) => {
             ]
           );
         }
-
-        notificationParts.push(`${partName} (${part.quantity})`);
       }
     } else {
       const partsToDelete = await client.query(
@@ -624,31 +591,6 @@ const updateOrder = async (id, orderData) => {
           client
         );
       }
-    }
-
-    if (notificationParts.length > 0) {
-      const adminResult = await client.query(
-        "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
-      );
-      if (!adminResult.rows.length) {
-        throw {
-          status: 500,
-          message: "No se encontró un usuario administrador",
-        };
-      }
-      const adminId = adminResult.rows[0].id;
-
-      await notificationService.createNotification(
-        {
-          order_id: id,
-          from_user_id: orderResult.rows[0].technician_id,
-          to_user_id: adminId,
-          message: `Solicitud de repuestos: ${notificationParts.join(", ")}`,
-          type: "part_request",
-          status: "Pendiente",
-        },
-        client
-      );
     }
 
     if (kilometraje && vehicle_economic_number && branch) {
@@ -944,9 +886,8 @@ const requestPart = async (orderId, part) => {
       console.error("[ORDER_SERVICE] Orden no encontrada para id:", orderId);
       throw { status: 404, message: "Orden no encontrada" };
     }
-    const technicianId = orderResult.rows[0].technician_id;
 
-    if (!part.part_id || !part.quantity || !part.requested_by || !part.price) {
+    if (!part.part_id || !part.quantity || !part.requested_by) {
       console.error("[ORDER_SERVICE] Datos de repuesto inválidos:", part);
       throw { status: 400, message: "Datos de repuesto inválidos" };
     }
@@ -968,43 +909,6 @@ const requestPart = async (orderId, part) => {
       part.authorized_by || null,
     ];
     const partResult = await client.query(partQuery, partValues);
-
-    const adminResult = await client.query(
-      "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
-    );
-    if (!adminResult.rows.length) {
-      throw { status: 500, message: "No se encontró un usuario administrador" };
-    }
-    const adminId = adminResult.rows[0].id;
-
-    const partNameResult = await client.query(
-      "SELECT name FROM parts WHERE id = $1",
-      [part.part_id]
-    );
-    if (!partNameResult.rows.length) {
-      throw {
-        status: 400,
-        message: `Repuesto con ID ${part.part_id} no encontrado`,
-      };
-    }
-    const partName = partNameResult.rows[0].name || "Repuesto desconocido";
-
-    await notificationService.createNotification(
-      {
-        order_id: orderId,
-        from_user_id: technicianId,
-        to_user_id: adminId,
-        message: `Solicitud de repuesto: ${partName} (${part.quantity})`,
-        type: "part_request",
-        status: "Pendiente",
-        details: {
-          part_id: part.part_id,
-          quantity: part.quantity,
-          price: part.price,
-        },
-      },
-      client
-    );
 
     await client.query("COMMIT");
     return partResult.rows[0];
