@@ -17,7 +17,7 @@ CREATE DATABASE masimtaller_db
 \connect masimtaller_db
 
 -- Funciones
-CREATE FUNCTION public.notify_order_parts_changes() RETURNS trigger
+CREATE FUNCTION public.notify_order_parts_changes() RETURNS TRIGGER
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -27,10 +27,12 @@ DECLARE
     notification_type VARCHAR(20);
     notification_message TEXT;
     details JSONB;
+    existing_notification RECORD;
+     quantity_diff INTEGER;
 BEGIN
     -- Obtener el nombre del repuesto
     SELECT name INTO part_name FROM parts WHERE id = NEW.part_id;
-    -- Obtener el technician_id de la tabla orders, especificando la tabla explícitamente
+    -- Obtener el technician_id de la tabla orders
     SELECT o.technician_id INTO technician_id 
     FROM orders o 
     WHERE o.id = NEW.order_id;
@@ -43,24 +45,75 @@ BEGIN
         details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'price', NEW.price);
         INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
         VALUES (NEW.order_id, NEW.requested_by, admin_id, notification_message, notification_type, 'Pendiente', details, CURRENT_TIMESTAMP);
-    ELSIF TG_OP = 'UPDATE' AND NEW.status != OLD.status THEN
-        IF NEW.status = 'Aprobado' THEN
-            notification_type := 'part_approval';
-            notification_message := format('Repuesto aprobado: %s (%s)', part_name, NEW.quantity);
-            details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'price', NEW.price, 'authorized_by', NEW.authorized_by);
-        ELSIF NEW.status = 'Rechazado' THEN
-            notification_type := 'part_rejection';
-            notification_message := format('Repuesto rechazado: %s (%s)', part_name, NEW.quantity);
-            details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'reason', NEW.note);
-        ELSE
-            RETURN NEW;
+    ELSIF TG_OP = 'UPDATE' THEN
+        -- Manejar cambio de estado
+        IF NEW.status != OLD.status THEN
+            IF NEW.status = 'Aprobado' THEN
+                notification_type := 'part_approval';
+                notification_message := format('Repuesto aprobado: %s (%s)', part_name, NEW.quantity);
+                details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'price', NEW.price, 'authorized_by', NEW.authorized_by);
+                INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
+                VALUES (NEW.order_id, NEW.authorized_by, technician_id, notification_message, notification_type, 'Pendiente', details, CURRENT_TIMESTAMP);
+            ELSIF NEW.status = 'Rechazado' THEN
+                notification_type := 'part_rejection';
+                notification_message := format('Repuesto rechazado: %s (%s)', part_name, NEW.quantity);
+                details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'reason', NEW.note);
+                INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
+                VALUES (NEW.order_id, NEW.authorized_by, technician_id, notification_message, notification_type, 'Pendiente', details, CURRENT_TIMESTAMP);
+            END IF;
         END IF;
-        INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
-        VALUES (NEW.order_id, NEW.authorized_by, technician_id, notification_message, notification_type, 'Pendiente', details, CURRENT_TIMESTAMP);
+
+        -- Manejar cambio de cantidad
+        IF NEW.quantity != OLD.quantity THEN
+            -- Buscar notificación existente de tipo part_request
+            SELECT * INTO existing_notification
+            FROM notifications
+            WHERE order_id = NEW.order_id
+              AND type = 'part_request'
+              AND (notifications.details->>'part_id')::text = NEW.part_id
+            ORDER BY created_at DESC
+            LIMIT 1;
+
+            IF FOUND THEN
+                IF existing_notification.status = 'Pendiente' THEN
+                    -- Actualizar notificación existente
+                    notification_message := format('Solicitud actualizada de repuesto: %s (%s)', part_name, NEW.quantity);
+                    details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'price', NEW.price);
+                    UPDATE notifications
+                    SET message = notification_message,
+                        details = details,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = existing_notification.id;
+                ELSIF existing_notification.status = 'Aprobado' THEN
+                    -- Crear nueva notificación part_request
+                    quantity_diff := NEW.quantity - (existing_notification.details->>'quantity')::INTEGER;
+                    notification_type := 'part_request';
+                    notification_message := format(
+                        'Solicitud de %s %s adicional(es) para la orden %s',
+                        ABS(quantity_diff),
+                        part_name,
+                        NEW.order_id
+                    );
+                    details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'price', NEW.price, 'quantity_diff', quantity_diff);
+                    INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
+                    VALUES (NEW.order_id, NEW.requested_by, admin_id, notification_message, notification_type, 'Pendiente', details, CURRENT_TIMESTAMP);
+
+                    -- Actualizar notificación aprobada existente
+                    UPDATE notifications
+                    SET details = jsonb_set(details, '{quantity}', to_jsonb(NEW.quantity)),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = existing_notification.id;
+                END IF;
+            END IF;
+        END IF;
     END IF;
     RETURN NEW;
 END;
 $$;
+
+CREATE TRIGGER order_parts_notification
+AFTER INSERT OR UPDATE ON order_parts
+FOR EACH ROW EXECUTE FUNCTION notify_order_parts_changes();
 
 CREATE FUNCTION public.notify_order_status_changes() RETURNS trigger
     LANGUAGE plpgsql
