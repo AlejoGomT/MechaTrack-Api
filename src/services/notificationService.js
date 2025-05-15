@@ -209,10 +209,48 @@ const createAttachment = async (
   }
 };
 
+const deletePartRequestNotification = async (
+  order_id,
+  part_id,
+  client = null
+) => {
+  try {
+    const query = `
+      DELETE FROM notifications
+      WHERE order_id = $1
+      AND type = 'part_request'
+      AND details->>'part_id' = $2
+      RETURNING *
+    `;
+    const values = [order_id, part_id];
+    const queryClient = client || pool;
+    console.log(
+      "[notificationService] Eliminando notificación de solicitud de repuesto:",
+      values
+    );
+    const result = await queryClient.query(query, values);
+    console.log(
+      "[notificationService] Notificaciones eliminadas:",
+      result.rows
+    );
+    return result.rows;
+  } catch (error) {
+    console.error(
+      "[notificationService] Error al eliminar notificación de repuesto:",
+      error
+    );
+    throw {
+      status: 500,
+      message: `Error al eliminar notificación de repuesto: ${error.message}`,
+    };
+  }
+};
+
 module.exports = {
   getNotifications,
   getMessagesByOrderId,
   createNotification,
   updateNotification,
   createAttachment,
+  deletePartRequestNotification,
 };

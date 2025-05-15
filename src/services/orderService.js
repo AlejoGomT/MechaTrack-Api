@@ -284,27 +284,24 @@ const createOrder = async (orderData) => {
         RETURNING *
       `;
       for (const part of parts) {
-        if (
-          !part.part_id ||
-          !part.quantity ||
-          !part.requested_by ||
-          !part.price
-        ) {
+        if (!part.part_id || !part.quantity || !part.requested_by) {
           console.error("[ORDER_SERVICE] Datos de repuesto inválidos:", part);
           throw { status: 400, message: "Datos de repuesto inválidos" };
         }
 
+        const partResult = await client.query(
+          "SELECT price, name FROM parts WHERE id = $1",
+          [part.part_id]
+        );
+        if (!partResult.rows.length) {
+          throw {
+            status: 400,
+            message: `Repuesto con ID ${part.part_id} no encontrado`,
+          };
+        }
+        const partPrice = partResult.rows[0].price;
+
         if (part.status === "Aprobado") {
-          const partResult = await client.query(
-            "SELECT quantity FROM parts WHERE id = $1",
-            [part.part_id]
-          );
-          if (!partResult.rows.length) {
-            throw {
-              status: 400,
-              message: `Repuesto con ID ${part.part_id} no encontrado`,
-            };
-          }
           const availableQuantity = parseInt(partResult.rows[0].quantity, 10);
           if (part.quantity > availableQuantity) {
             throw {
@@ -312,7 +309,6 @@ const createOrder = async (orderData) => {
               message: `Inventario insuficiente para el repuesto ${part.part_id}. Disponible: ${availableQuantity}, Solicitado: ${part.quantity}`,
             };
           }
-
           await partService.updatePartInventory(part.part_id, part.quantity);
         }
 
@@ -320,24 +316,14 @@ const createOrder = async (orderData) => {
           order.id,
           part.part_id,
           part.quantity,
-          part.price,
+          partPrice,
           part.status || "Solicitado",
           part.requested_by,
           part.authorized_by || null,
         ];
-        const partResult = await client.query(partQuery, partValues);
+        const partInsertResult = await client.query(partQuery, partValues);
 
-        const partNameResult = await client.query(
-          "SELECT name FROM parts WHERE id = $1",
-          [part.part_id]
-        );
-        if (!partNameResult.rows.length) {
-          throw {
-            status: 400,
-            message: `Repuesto con ID ${part.part_id} no encontrado`,
-          };
-        }
-        const partName = partNameResult.rows[0].name || "Repuesto desconocido";
+        const partName = partResult.rows[0].name || "Repuesto desconocido";
         notificationParts.push(`${partName} (${part.quantity})`);
       }
     }
@@ -367,7 +353,6 @@ const createOrder = async (orderData) => {
       );
     }
 
-    // Crear notificación de orden creada para el admin
     const adminResult = await client.query(
       "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
     );
@@ -489,15 +474,32 @@ const updateOrder = async (id, orderData) => {
 
     let notificationParts = [];
     if (parts && Array.isArray(parts) && parts.length > 0) {
+      const currentPartsResult = await client.query(
+        "SELECT part_id, status FROM order_parts WHERE order_id = $1",
+        [id]
+      );
+      const currentParts = currentPartsResult.rows;
+
+      const partsToDelete = currentParts.filter(
+        (cp) =>
+          cp.status === "Solicitado" &&
+          !parts.some((p) => p.part_id === cp.part_id)
+      );
+
+      for (const part of partsToDelete) {
+        await client.query(
+          "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2",
+          [id, part.part_id]
+        );
+        await notificationService.deletePartRequestNotification(
+          id,
+          part.part_id,
+          client
+        );
+      }
+
       for (const part of parts) {
-        if (
-          !part.part_id ||
-          String(part.part_id).length > 10 ||
-          !part.quantity ||
-          !part.requested_by ||
-          String(part.requested_by).length > 10 ||
-          !part.price
-        ) {
+        if (!part.part_id || !part.quantity || !part.requested_by) {
           throw {
             status: 400,
             message: `Datos de repuesto inválidos: ${JSON.stringify(part)}`,
@@ -514,12 +516,6 @@ const updateOrder = async (id, orderData) => {
           };
         }
         if (part.authorized_by) {
-          if (String(part.authorized_by).length > 10) {
-            throw {
-              status: 400,
-              message: `ID de usuario autorizado excede el límite de 10 caracteres: ${part.authorized_by}`,
-            };
-          }
           const authUserResult = await client.query(
             "SELECT id FROM users WHERE id = $1",
             [part.authorized_by]
@@ -532,19 +528,24 @@ const updateOrder = async (id, orderData) => {
           }
         }
 
-        if (part.status === "Aprobado") {
-          const partResult = await client.query(
-            "SELECT quantity FROM parts WHERE id = $1",
-            [part.part_id]
-          );
-          if (!partResult.rows.length) {
-            throw {
-              status: 400,
-              message: `Repuesto con ID ${part.part_id} no encontrado`,
-            };
-          }
-          const availableQuantity = parseInt(partResult.rows[0].quantity, 10);
+        const partResult = await client.query(
+          "SELECT price, name, quantity AS available_quantity FROM parts WHERE id = $1",
+          [part.part_id]
+        );
+        if (!partResult.rows.length) {
+          throw {
+            status: 400,
+            message: `Repuesto con ID ${part.part_id} no encontrado`,
+          };
+        }
+        const partPrice = partResult.rows[0].price;
+        const partName = partResult.rows[0].name || "Repuesto desconocido";
 
+        if (part.status === "Aprogabado") {
+          const availableQuantity = parseInt(
+            partResult.rows[0].available_quantity,
+            10
+          );
           const existingPart = await client.query(
             "SELECT quantity FROM order_parts WHERE order_id = $1 AND part_id = $2",
             [id, part.part_id]
@@ -552,7 +553,6 @@ const updateOrder = async (id, orderData) => {
           const previousQuantity = existingPart.rows.length
             ? parseInt(existingPart.rows[0].quantity, 10)
             : 0;
-
           const quantityChange = part.quantity - previousQuantity;
           if (quantityChange > availableQuantity) {
             throw {
@@ -560,7 +560,6 @@ const updateOrder = async (id, orderData) => {
               message: `Inventario insuficiente para el repuesto ${part.part_id}. Disponible: ${availableQuantity}, Solicitado: ${quantityChange}`,
             };
           }
-
           if (quantityChange > 0) {
             await partService.updatePartInventory(part.part_id, quantityChange);
           }
@@ -579,7 +578,7 @@ const updateOrder = async (id, orderData) => {
           `,
             [
               part.quantity,
-              part.price,
+              partPrice, // Usar precio de parts
               part.status || "Solicitado",
               part.requested_by,
               part.authorized_by || null,
@@ -599,7 +598,7 @@ const updateOrder = async (id, orderData) => {
               id,
               part.part_id,
               part.quantity,
-              part.price,
+              partPrice,
               part.status || "Solicitado",
               part.requested_by,
               part.authorized_by || null,
@@ -607,18 +606,23 @@ const updateOrder = async (id, orderData) => {
           );
         }
 
-        const partResult = await client.query(
-          "SELECT name FROM parts WHERE id = $1",
-          [part.part_id]
-        );
-        if (!partResult.rows.length) {
-          throw {
-            status: 400,
-            message: `Repuesto con ID ${part.part_id} no encontrado`,
-          };
-        }
-        const partName = partResult.rows[0].name || "Repuesto desconocido";
         notificationParts.push(`${partName} (${part.quantity})`);
+      }
+    } else {
+      const partsToDelete = await client.query(
+        "SELECT part_id FROM order_parts WHERE order_id = $1 AND status = $2",
+        [id, "Solicitado"]
+      );
+      for (const part of partsToDelete.rows) {
+        await client.query(
+          "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2",
+          [id, part.part_id]
+        );
+        await notificationService.deletePartRequestNotification(
+          id,
+          part.part_id,
+          client
+        );
       }
     }
 

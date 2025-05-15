@@ -106,21 +106,6 @@ const createOrder = async (req, res) => {
       }
     }
 
-    // Obtener precios de parts si no se proporcionan
-    for (const part of parsedParts) {
-      if (!part.price) {
-        const partResult = await pool.query(
-          "SELECT price FROM parts WHERE id = $1",
-          [part.part_id]
-        );
-        if (partResult.rows.length) {
-          part.price = partResult.rows[0].price;
-        } else {
-          throw new Error(`Repuesto con ID ${part.part_id} no encontrado`);
-        }
-      }
-    }
-
     const order = await orderService.createOrder({
       type,
       description,
@@ -134,7 +119,6 @@ const createOrder = async (req, res) => {
       parts: parsedParts.map((part) => ({
         part_id: part.part_id,
         quantity: parseInt(part.quantity, 10),
-        price: parseFloat(part.price),
         status: part.status || "Solicitado",
         requested_by: part.requested_by || technician_id,
         authorized_by: part.authorized_by || null,
@@ -150,7 +134,6 @@ const createOrder = async (req, res) => {
 const updateOrder = async (req, res) => {
   const { id } = req.params;
   try {
-    console.log("Datos recibidos en updateOrder:", req.body, req.files);
     const newImages =
       req.files?.map((file) => `/uploads/${file.filename}`) || [];
     const existingImages = req.body.existingImages
@@ -174,8 +157,7 @@ const updateOrder = async (req, res) => {
             String(part.part_id).length > 10 ||
             !part.quantity ||
             !part.requested_by ||
-            String(part.requested_by).length > 10 ||
-            !part.price
+            String(part.requested_by).length > 10
           ) {
             throw new Error(
               `Datos de repuesto inválidos: ${JSON.stringify(part)}`
@@ -191,7 +173,6 @@ const updateOrder = async (req, res) => {
               `Usuario con ID ${part.requested_by} no encontrado`
             );
           }
-          // Validar authorized_by si está presente
           if (part.authorized_by) {
             if (String(part.authorized_by).length > 10) {
               throw new Error(
@@ -215,21 +196,6 @@ const updateOrder = async (req, res) => {
       }
     }
 
-    // Obtener precios de parts si no se proporcionan
-    for (const part of parts) {
-      if (!part.price || part.price <= 0) {
-        const partResult = await pool.query(
-          "SELECT price FROM parts WHERE id = $1",
-          [part.part_id]
-        );
-        if (partResult.rows.length) {
-          part.price = partResult.rows[0].price;
-        } else {
-          throw new Error(`Repuesto con ID ${part.part_id} no encontrado`);
-        }
-      }
-    }
-
     const orderData = {
       initial_diagnosis: req.body.initial_diagnosis,
       tasks: req.body.tasks,
@@ -242,17 +208,14 @@ const updateOrder = async (req, res) => {
       parts: parts.map((part) => ({
         part_id: part.part_id,
         quantity: parseInt(part.quantity, 10),
-        price: parseFloat(part.price),
         status: part.status || "Solicitado",
         requested_by: part.requested_by,
         authorized_by: part.authorized_by || null,
       })),
     };
-    console.log("Enviando a orderService.updateOrder:", orderData);
     const updatedOrder = await orderService.updateOrder(id, orderData);
     res.json(updatedOrder);
   } catch (error) {
-    console.error("Error en updateOrder controller:", error);
     res.status(error.status || 500).json({
       message: error.message || "Error al actualizar la orden",
       details: error.details || error.message,
@@ -264,32 +227,15 @@ const requestPart = async (req, res) => {
   const { id } = req.params;
   const part = req.body;
   try {
-    console.log("[orderController] requestPart data:", part);
-    // Obtener price desde parts si no se proporciona
-    let price = parseFloat(part.price);
-    if (!price) {
-      const partResult = await pool.query(
-        "SELECT price FROM parts WHERE id = $1",
-        [part.part_id]
-      );
-      if (partResult.rows.length) {
-        price = partResult.rows[0].price;
-      } else {
-        throw new Error(`Repuesto con ID ${part.part_id} no encontrado`);
-      }
-    }
-
     await orderService.requestPart(id, {
       part_id: part.part_id,
       quantity: parseInt(part.quantity, 10),
-      price,
       status: part.status || "Solicitado",
       requested_by: part.requested_by,
       authorized_by: part.authorized_by || null,
     });
     res.status(201).json({ message: "Repuesto solicitado exitosamente" });
   } catch (error) {
-    console.error("Error en requestPart controller:", error);
     res.status(error.status || 500).json({ message: error.message });
   }
 };
