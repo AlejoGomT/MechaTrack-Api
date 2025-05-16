@@ -82,10 +82,89 @@ router.put(
   async (req, res) => {
     try {
       const { id, partId } = req.params;
-      const { quantity, status, price, note, authorized_by } = req.body;
+      const { quantity, status, authorized_by } = req.body;
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
+
+        if (quantity === 0 || quantity === undefined) {
+          console.log("[orderRoutes] Eliminando repuesto:", { id, partId });
+          const deleteQuery = `
+            DELETE FROM order_parts
+            WHERE order_id = $1 AND part_id = $2
+            RETURNING *
+          `;
+          const deleteValues = [id, partId];
+          const result = await client.query(deleteQuery, deleteValues);
+
+          await notificationService.deletePartRequestNotification(
+            id,
+            partId,
+            client
+          );
+          await client.query("COMMIT");
+          return res.json({
+            message: "Repuesto eliminado exitosamente",
+            deleted: true,
+          });
+        }
+
+        // Validar estado del repuesto
+        const partCheck = await client.query(
+          "SELECT status FROM order_parts WHERE order_id = $1 AND part_id = $2",
+          [id, partId]
+        );
+        if (!partCheck.rows.length) {
+          throw { status: 404, message: "Repuesto no encontrado" };
+        }
+        if (
+          req.user.role === "technician" &&
+          partCheck.rows[0].status !== "Solicitado"
+        ) {
+          throw {
+            status: 400,
+            message: "Solo se pueden editar repuestos en estado Solicitado",
+          };
+        }
+
+        // Obtener precio desde la tabla parts
+        const partResult = await client.query(
+          "SELECT price FROM parts WHERE id = $1",
+          [partId]
+        );
+        if (!partResult.rows.length) {
+          throw {
+            status: 400,
+            message: `Repuesto con ID ${partId} no encontrado`,
+          };
+        }
+        const partPrice = partResult.rows[0].price;
+
+        // Validar inventario si se aprueba
+        if (status === "Aprobado") {
+          const availablePart = await client.query(
+            "SELECT quantity AS available_quantity FROM parts WHERE id = $1",
+            [partId]
+          );
+          if (!availablePart.rows.length) {
+            throw {
+              status: 400,
+              message: `Repuesto con ID ${partId} no encontrado`,
+            };
+          }
+          const availableQuantity = parseInt(
+            availablePart.rows[0].available_quantity,
+            10
+          );
+          if (quantity > availableQuantity) {
+            throw {
+              status: 400,
+              message: `Inventario insuficiente para el repuesto ${partId}. Disponible: ${availableQuantity}, Solicitado: ${quantity}`,
+            };
+          }
+          await partService.updatePartInventory(partId, quantity);
+        }
+
         const updateQuery = `
           UPDATE order_parts
           SET quantity = $1, status = $2, price = $3, authorized_by = $4
@@ -94,8 +173,8 @@ router.put(
         `;
         const updateValues = [
           quantity,
-          status,
-          price || null,
+          status || partCheck.rows[0].status,
+          partPrice,
           authorized_by || null,
           id,
           partId,
@@ -106,29 +185,11 @@ router.put(
           throw { status: 404, message: "Repuesto no encontrado" };
         }
 
-        if (status === "Rechazado" && note) {
-          const orderResult = await client.query(
-            "SELECT technician_id FROM orders WHERE id = $1",
-            [id]
-          );
-          if (orderResult.rows.length) {
-            const technicianId = orderResult.rows[0].technician_id;
-            await notificationService.createNotification(
-              {
-                order_id: id,
-                from_user_id: req.user.id,
-                to_user_id: technicianId,
-                message: `Repuesto rechazado: ${note}`,
-                type: "part_rejection",
-                status: "Pendiente",
-              },
-              client
-            );
-          }
-        }
-
         await client.query("COMMIT");
-        res.json(result.rows[0]);
+        res.json({
+          message: "Repuesto actualizado exitosamente",
+          part: result.rows[0],
+        });
       } catch (err) {
         await client.query("ROLLBACK");
         throw err;
@@ -136,7 +197,7 @@ router.put(
         client.release();
       }
     } catch (err) {
-      console.error("Error al actualizar repuesto:", err);
+      console.error("[orderRoutes] Error al actualizar repuesto:", err);
       res.status(err.status || 500).json({ message: err.message });
     }
   }

@@ -45,7 +45,6 @@ const getOrderById = async (req, res) => {
     if (!order) {
       return res.status(404).json({ message: "Orden no encontrada" });
     }
-    // Incluir invoice_number y delivery_note_number desde invoices
     const invoiceResult = await pool.query(
       "SELECT invoice_number, delivery_note_number FROM invoices WHERE order_id = $1",
       [id]
@@ -163,7 +162,6 @@ const updateOrder = async (req, res) => {
               `Datos de repuesto inválidos: ${JSON.stringify(part)}`
             );
           }
-          // Validar que requested_by exista en la tabla users
           const userResult = await pool.query(
             "SELECT id FROM users WHERE id = $1",
             [part.requested_by]
@@ -310,7 +308,6 @@ const finalizeOrder = async (req, res) => {
 
     const updatedOrder = await orderService.updateOrder(id, orderData);
 
-    // Añadir al historial
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -336,7 +333,6 @@ const finalizeOrder = async (req, res) => {
       client.release();
     }
 
-    // Crear notificación para el técnico si se rechaza
     if (action === "reject") {
       const orderResult = await pool.query(
         "SELECT technician_id FROM orders WHERE id = $1",
