@@ -1,3 +1,5 @@
+const fs = require("fs").promises;
+const path = require("path");
 const orderService = require("../services/orderService");
 const notificationService = require("../services/notificationService");
 const pool = require("../config/database");
@@ -275,6 +277,31 @@ const deleteOrderImage = async (req, res) => {
       return res.status(400).json({ message: "Índice de imagen inválido" });
     }
 
+    const imagePath = order.images[parseInt(imageIndex)];
+    if (!imagePath.startsWith("/uploads/")) {
+      console.warn("[orderController] Ruta de imagen inválida:", imagePath);
+    } else {
+      const filePath = path.resolve(
+        __dirname,
+        "..",
+        "..",
+        "uploads",
+        path.basename(imagePath)
+      );
+      try {
+        await fs.unlink(filePath);
+        console.log(
+          "[orderController] Imagen eliminada del sistema de archivos:",
+          filePath
+        );
+      } catch (err) {
+        if (err.code === "ENOENT") {
+          console.warn("[orderController] Archivo no encontrado:", filePath);
+        } else {
+          console.error("[orderController] Error al eliminar archivo:", err);
+        }
+      }
+    }
     const updatedImages = order.images.filter(
       (_, index) => index !== parseInt(imageIndex)
     );
@@ -283,7 +310,7 @@ const deleteOrderImage = async (req, res) => {
     });
     res.json({ message: "Imagen eliminada exitosamente", order: updatedOrder });
   } catch (error) {
-    console.error("Error en deleteOrderImage controller:", error);
+    console.error("[orderController] Error en deleteOrderImage:", error);
     res.status(error.status || 500).json({ message: error.message });
   }
 };

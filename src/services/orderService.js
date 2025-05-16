@@ -443,6 +443,8 @@ const updateOrder = async (id, orderData) => {
       paramIndex++;
     }
 
+    updates.push(`updated_at = CURRENT_TIMESTAMP`);
+
     if (parts && Array.isArray(parts) && parts.length > 0) {
       const currentPartsResult = await client.query(
         "SELECT part_id, status FROM order_parts WHERE order_id = $1",
@@ -607,7 +609,11 @@ const updateOrder = async (id, orderData) => {
     }
 
     let updatedOrder;
-    if (updates.length > 0) {
+    if (
+      updates.length > 0 ||
+      parts ||
+      (kilometraje && vehicle_economic_number && branch)
+    ) {
       const query = `UPDATE orders SET ${updates.join(
         ", "
       )} WHERE id = $1 RETURNING *`;
@@ -892,6 +898,38 @@ const requestPart = async (orderId, part) => {
       throw { status: 400, message: "Datos de repuesto inválidos" };
     }
 
+    // Obtener precio y cantidad disponible desde parts
+    const partData = await client.query(
+      "SELECT price, quantity AS available_quantity FROM parts WHERE id = $1",
+      [part.part_id]
+    );
+    if (!partData.rows.length) {
+      console.error(
+        "[ORDER_SERVICE] Repuesto no encontrado en parts:",
+        part.part_id
+      );
+      throw {
+        status: 400,
+        message: `Repuesto con ID ${part.part_id} no encontrado`,
+      };
+    }
+    const partPrice = partData.rows[0].price;
+    const availableQuantity = parseInt(partData.rows[0].available_quantity, 10);
+
+    // Validar inventario
+    if (part.quantity > availableQuantity) {
+      console.error("[ORDER_SERVICE] Inventario insuficiente:", {
+        partId: part.part_id,
+        quantity: part.quantity,
+        availableQuantity,
+      });
+      throw {
+        status: 400,
+        message: `Inventario insuficiente para el repuesto ${part.part_id}. Disponible: ${availableQuantity}, Solicitado: ${part.quantity}`,
+      };
+    }
+
+    // Insertar el repuesto en order_parts
     const partQuery = `
       INSERT INTO order_parts (
         order_id, part_id, quantity, price, status, requested_by, authorized_by
@@ -903,7 +941,7 @@ const requestPart = async (orderId, part) => {
       orderId,
       part.part_id,
       part.quantity,
-      part.price,
+      partPrice,
       part.status || "Solicitado",
       part.requested_by,
       part.authorized_by || null,
@@ -911,9 +949,14 @@ const requestPart = async (orderId, part) => {
     const partResult = await client.query(partQuery, partValues);
 
     await client.query("COMMIT");
+    console.log(
+      "[ORDER_SERVICE] Repuesto solicitado exitosamente:",
+      partResult.rows[0]
+    );
     return partResult.rows[0];
   } catch (err) {
     await client.query("ROLLBACK");
+    console.error("[ORDER_SERVICE] Error al solicitar repuesto:", err);
     throw err.status
       ? err
       : {
@@ -923,6 +966,7 @@ const requestPart = async (orderId, part) => {
         };
   } finally {
     client.release();
+    console.log("[ORDER_SERVICE] Cliente de base de datos liberado");
   }
 };
 

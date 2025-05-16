@@ -41,11 +41,23 @@ BEGIN
     SELECT id INTO admin_id FROM users WHERE role = 'admin' LIMIT 1;
 
     IF TG_OP = 'INSERT' THEN
-        notification_type := 'part_request';
-        notification_message := format('Solicitud de repuesto: %s (%s)', part_name, NEW.quantity);
-        notification_details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'price', NEW.price);
-        INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
-        VALUES (NEW.order_id, NEW.requested_by, admin_id, notification_message, notification_type, 'Pendiente', notification_details, CURRENT_TIMESTAMP);
+        -- Verificar si ya existe una notificación pendiente para este part_id y order_id
+        SELECT * INTO existing_notification
+        FROM notifications
+        WHERE order_id = NEW.order_id
+          AND type = 'part_request'
+          AND (details->>'part_id')::text = NEW.part_id
+          AND status = 'Pendiente'
+        LIMIT 1;
+
+        IF NOT FOUND THEN
+            notification_type := 'part_request';
+            notification_message := format('Solicitud de repuesto: %s (%s)', part_name, NEW.quantity);
+            notification_details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'price', NEW.price);
+            INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
+            VALUES (NEW.order_id, NEW.requested_by, admin_id, notification_message, notification_type, 'Pendiente', notification_details, CURRENT_TIMESTAMP);
+        END IF;
+
     ELSIF TG_OP = 'UPDATE' THEN
         -- Manejar cambio de estado
         IF NEW.status != OLD.status THEN
@@ -64,47 +76,39 @@ BEGIN
             END IF;
         END IF;
 
-        -- Manejar cambio de cantidad
-        IF NEW.quantity != OLD.quantity THEN
-            -- Buscar notificación existente de tipo part_request
+        -- Manejar cambio de cantidad o precio
+        IF NEW.quantity != OLD.quantity OR NEW.price != OLD.price THEN
             SELECT * INTO existing_notification
             FROM notifications
             WHERE order_id = NEW.order_id
               AND type = 'part_request'
-              AND (notifications.details->>'part_id')::text = NEW.part_id
+              AND (details->>'part_id')::text = NEW.part_id
+              AND status = 'Pendiente'
             ORDER BY created_at DESC
             LIMIT 1;
 
             IF FOUND THEN
-                IF existing_notification.status = 'Pendiente' THEN
-                    -- Actualizar notificación existente
-                    notification_message := format('Solicitud actualizada de repuesto: %s (%s)', part_name, NEW.quantity);
-                    notification_details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'price', NEW.price);
-                    UPDATE notifications
-                    SET message = notification_message,
-                        details = notification_details,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = existing_notification.id;
-                ELSIF existing_notification.status = 'Aprobado' THEN
-                    -- Crear nueva notificación part_request
-                    quantity_diff := NEW.quantity - (existing_notification.details->>'quantity')::INTEGER;
-                    notification_type := 'part_request';
-                    notification_message := format(
-                        'Solicitud de %s %s adicional(es) para la orden %s',
-                        ABS(quantity_diff),
-                        part_name,
-                        NEW.order_id
-                    );
-                    notification_details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'price', NEW.price, 'quantity_diff', quantity_diff);
-                    INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
-                    VALUES (NEW.order_id, NEW.requested_by, admin_id, notification_message, notification_type, 'Pendiente', notification_details, CURRENT_TIMESTAMP);
-
-                    -- Actualizar notificación aprobada existente
-                    UPDATE notifications
-                    SET details = jsonb_set(notifications.details, '{quantity}', to_jsonb(NEW.quantity)),
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = existing_notification.id;
-                END IF;
+                -- Actualizar notificación existente
+                notification_message := format('Solicitud actualizada de repuesto: %s (%s)', part_name, NEW.quantity);
+                notification_details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'price', NEW.price);
+                UPDATE notifications
+                SET message = notification_message,
+                    details = notification_details,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = existing_notification.id;
+            ELSE
+                -- Crear nueva notificación si no hay una pendiente
+                quantity_diff := NEW.quantity - OLD.quantity;
+                notification_type := 'part_request';
+                notification_message := format(
+                    'Solicitud de %s %s adicional(es) para la orden %s',
+                    ABS(quantity_diff),
+                    part_name,
+                    NEW.order_id
+                );
+                notification_details := jsonb_build_object('part_id', NEW.part_id, 'quantity', NEW.quantity, 'price', NEW.price, 'quantity_diff', quantity_diff);
+                INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
+                VALUES (NEW.order_id, NEW.requested_by, admin_id, notification_message, notification_type, 'Pendiente', notification_details, CURRENT_TIMESTAMP);
             END IF;
         END IF;
     END IF;
