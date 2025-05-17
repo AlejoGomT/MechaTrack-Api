@@ -17,6 +17,29 @@ CREATE DATABASE masimtaller_db
 \connect masimtaller_db
 
 -- Funciones
+CREATE OR REPLACE FUNCTION restrict_single_admin_secretary()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Validar que solo haya un admin
+    IF NEW.role = 'admin' THEN
+        PERFORM 1 FROM users WHERE role = 'admin' AND id != NEW.id;
+        IF FOUND THEN
+            RAISE EXCEPTION 'Solo puede haber un usuario con rol admin';
+        END IF;
+    END IF;
+
+    -- Validar que solo haya un secretary
+    IF NEW.role = 'secretary' THEN
+        PERFORM 1 FROM users WHERE role = 'secretary' AND id != NEW.id;
+        IF FOUND THEN
+            RAISE EXCEPTION 'Solo puede haber un usuario con rol secretary';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION public.notify_order_parts_changes()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -155,6 +178,7 @@ CREATE TABLE public.users (
     id character varying(10) NOT NULL,
     first_name character varying(50) NOT NULL,
     last_name character varying(50) NOT NULL,
+    email character varying(100) UNIQUE,
     password character varying(100) NOT NULL,
     role character varying(20) NOT NULL,
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,

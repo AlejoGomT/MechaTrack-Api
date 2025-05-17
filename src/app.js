@@ -19,8 +19,8 @@ app.use("/uploads", express.static("uploads"));
 
 // Rutas
 app.use("/api/auth", authRoutes);
-app.use("/api/orders", orderRoutes); // Eliminamos upload.array("images")
-//app.use("/api/users", userRoutes);
+app.use("/api/orders", orderRoutes);
+app.use("/api/users", userRoutes);
 app.use("/api/vehicles", vehicleRoutes);
 app.use("/api/parts", partRoutes);
 app.use("/api/notifications", notificationRoutes);
