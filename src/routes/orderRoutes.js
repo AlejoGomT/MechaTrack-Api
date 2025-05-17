@@ -83,119 +83,70 @@ router.put(
     try {
       const { id, partId } = req.params;
       const { quantity, status, authorized_by } = req.body;
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
 
-        if (quantity === 0 || quantity === undefined) {
-          console.log("[orderRoutes] Eliminando repuesto:", { id, partId });
-          const deleteQuery = `
-            DELETE FROM order_parts
-            WHERE order_id = $1 AND part_id = $2
-            RETURNING *
-          `;
-          const deleteValues = [id, partId];
-          const result = await client.query(deleteQuery, deleteValues);
+      if (!quantity || quantity < 0) {
+        return res.status(400).json({ message: "Cantidad inválida" });
+      }
 
-          await notificationService.deletePartRequestNotification(
-            id,
-            partId,
-            client
-          );
-          await client.query("COMMIT");
-          return res.json({
-            message: "Repuesto eliminado exitosamente",
-            deleted: true,
+      // Validar estado
+      const validStatuses = [
+        "Solicitado",
+        "Aprobado",
+        "Rechazado",
+        "Devolución Solicitada",
+        "Devolución Rechazada",
+      ];
+      if (status && !validStatuses.includes(status)) {
+        return res.status(400).json({ message: "Estado de repuesto inválido" });
+      }
+
+      // Para técnicos, solo permitir cambios en estado "Solicitado"
+      const partCheck = await orderService.getOrderById(id);
+      const part = partCheck?.parts.find((p) => p.part_id === partId);
+      if (!part) {
+        return res.status(404).json({ message: "Repuesto no encontrado" });
+      }
+      if (
+        req.user.role === "technician" &&
+        part.status !== "Solicitado" &&
+        (!status || status !== "Solicitado")
+      ) {
+        return res.status(403).json({
+          message: "Solo se pueden editar repuestos en estado Solicitado",
+        });
+      }
+
+      // Si es eliminación (quantity = 0)
+      if (quantity === 0) {
+        const result = await orderService.updatePartQuantity(id, partId, 0);
+        return res.json(result);
+      }
+
+      // Si se aprueba, el admin debe proporcionar authorized_by
+      if (status === "Aprobado" && req.user.role === "admin") {
+        if (!authorized_by) {
+          return res.status(400).json({
+            message: "Se requiere el ID del usuario que autoriza",
           });
         }
-
-        // Validar estado del repuesto
-        const partCheck = await client.query(
-          "SELECT status FROM order_parts WHERE order_id = $1 AND part_id = $2",
-          [id, partId]
-        );
-        if (!partCheck.rows.length) {
-          throw { status: 404, message: "Repuesto no encontrado" };
-        }
-        if (
-          req.user.role === "technician" &&
-          partCheck.rows[0].status !== "Solicitado"
-        ) {
-          throw {
-            status: 400,
-            message: "Solo se pueden editar repuestos en estado Solicitado",
-          };
-        }
-
-        // Obtener precio desde la tabla parts
-        const partResult = await client.query(
-          "SELECT price FROM parts WHERE id = $1",
-          [partId]
-        );
-        if (!partResult.rows.length) {
-          throw {
-            status: 400,
-            message: `Repuesto con ID ${partId} no encontrado`,
-          };
-        }
-        const partPrice = partResult.rows[0].price;
-
-        // Validar inventario si se aprueba
-        if (status === "Aprobado") {
-          const availablePart = await client.query(
-            "SELECT quantity AS available_quantity FROM parts WHERE id = $1",
-            [partId]
-          );
-          if (!availablePart.rows.length) {
-            throw {
-              status: 400,
-              message: `Repuesto con ID ${partId} no encontrado`,
-            };
-          }
-          const availableQuantity = parseInt(
-            availablePart.rows[0].available_quantity,
-            10
-          );
-          if (quantity > availableQuantity) {
-            throw {
-              status: 400,
-              message: `Inventario insuficiente para el repuesto ${partId}. Disponible: ${availableQuantity}, Solicitado: ${quantity}`,
-            };
-          }
-          await partService.updatePartInventory(partId, quantity);
-        }
-
-        const updateQuery = `
-          UPDATE order_parts
-          SET quantity = $1, status = $2, price = $3, authorized_by = $4
-          WHERE order_id = $5 AND part_id = $6
-          RETURNING *
-        `;
-        const updateValues = [
-          quantity,
-          status || partCheck.rows[0].status,
-          partPrice,
-          authorized_by || null,
-          id,
-          partId,
-        ];
-        const result = await client.query(updateQuery, updateValues);
-
-        if (!result.rows.length) {
-          throw { status: 404, message: "Repuesto no encontrado" };
-        }
-
-        await client.query("COMMIT");
-        res.json({
-          message: "Repuesto actualizado exitosamente",
-          part: result.rows[0],
-        });
-      } catch (err) {
-        await client.query("ROLLBACK");
-        throw err;
-      } finally {
-        client.release();
+        const partData = {
+          part_id: partId,
+          quantity: parseInt(quantity, 10),
+          status: "Aprobado",
+          requested_by: part.requested_by_id || req.user.id,
+          authorized_by,
+        };
+        await orderService.requestPart(id, partData);
+        return res.json({ message: "Repuesto aprobado exitosamente" });
       }
+
+      // Actualización estándar (técnico o admin)
+      const result = await orderService.updatePartQuantity(
+        id,
+        partId,
+        parseInt(quantity, 10)
+      );
+      res.json(result);
     } catch (err) {
       console.error("[orderRoutes] Error al actualizar repuesto:", err);
       res.status(err.status || 500).json({ message: err.message });
@@ -207,6 +158,35 @@ router.post(
   authenticateToken,
   restrictTo("technician"),
   orderController.requestPartReturn
+);
+router.post(
+  "/:id/parts/:partId/approve-return",
+  authenticateToken,
+  restrictTo("admin"),
+  async (req, res) => {
+    try {
+      const { id, partId } = req.params;
+      const { status } = req.body; // "Devolución Aprobada" o "Devolución Rechazada"
+      const authorizedBy = req.user.id;
+
+      const result = await orderService.approvePartReturn(
+        id,
+        partId,
+        status,
+        authorizedBy
+      );
+      res.json({
+        message:
+          status === "Devolución Aprobada"
+            ? "Devolución aprobada y repuesto eliminado exitosamente"
+            : "Devolución rechazada exitosamente",
+        part: result,
+      });
+    } catch (err) {
+      console.error("[orderRoutes] Error al aprobar/rechazar devolución:", err);
+      res.status(err.status || 500).json({ message: err.message });
+    }
+  }
 );
 router.put(
   "/:id/status",

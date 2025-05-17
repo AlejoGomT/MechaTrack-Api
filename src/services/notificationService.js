@@ -21,8 +21,20 @@ const getNotifications = async ({ to_user_id, status, order_id, user_id }) => {
       query += ` AND n.order_id = $${paramIndex}`;
       values.push(order_id);
       paramIndex++;
-      // Filtrar solo mensajes de tipo 'message' o 'order_creation' cuando se solicita por order_id
-      query += ` AND n.type IN ('message', 'order_creation')`;
+      // Filtrar solo los tipos de mensajes permitidos cuando se solicita por order_id
+      query += ` AND n.type IN (
+      'message',
+      'part_request',
+      'closure_request',
+      'part_approval',
+      'part_rejection',
+      'closure_approval',
+      'closure_rejection',
+      'client_update',
+      'invoice_complete',
+      'part_return_request',
+      'order_creation'
+      )`;
     }
     if (user_id) {
       query += ` AND (n.to_user_id = $${paramIndex} OR n.from_user_id = $${paramIndex})`;

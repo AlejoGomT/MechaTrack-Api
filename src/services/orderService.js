@@ -447,7 +447,7 @@ const updateOrder = async (id, orderData) => {
 
     if (parts && Array.isArray(parts) && parts.length > 0) {
       const currentPartsResult = await client.query(
-        "SELECT part_id, status FROM order_parts WHERE order_id = $1",
+        "SELECT part_id, status, quantity FROM order_parts WHERE order_id = $1",
         [id]
       );
       const currentParts = currentPartsResult.rows;
@@ -462,6 +462,11 @@ const updateOrder = async (id, orderData) => {
         await client.query(
           "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2",
           [id, part.part_id]
+        );
+        // Liberar quantity_reserved
+        await client.query(
+          "UPDATE parts SET quantity_reserved = quantity_reserved - $1 WHERE id = $2",
+          [part.quantity, part.part_id]
         );
         await notificationService.deletePartRequestNotification(
           id,
@@ -501,7 +506,7 @@ const updateOrder = async (id, orderData) => {
         }
 
         const partResult = await client.query(
-          "SELECT price, name, quantity AS available_quantity FROM parts WHERE id = $1",
+          "SELECT price, quantity, quantity_reserved FROM parts WHERE id = $1 FOR UPDATE",
           [part.part_id]
         );
         if (!partResult.rows.length) {
@@ -511,19 +516,18 @@ const updateOrder = async (id, orderData) => {
           };
         }
         const partPrice = partResult.rows[0].price;
+        const availableQuantity =
+          partResult.rows[0].quantity - partResult.rows[0].quantity_reserved;
+
+        const existingPart = await client.query(
+          "SELECT quantity, status FROM order_parts WHERE order_id = $1 AND part_id = $2",
+          [id, part.part_id]
+        );
+        const previousQuantity = existingPart.rows.length
+          ? existingPart.rows[0].quantity
+          : 0;
 
         if (part.status === "Aprobado") {
-          const availableQuantity = parseInt(
-            partResult.rows[0].available_quantity,
-            10
-          );
-          const existingPart = await client.query(
-            "SELECT quantity FROM order_parts WHERE order_id = $1 AND part_id = $2",
-            [id, part.part_id]
-          );
-          const previousQuantity = existingPart.rows.length
-            ? parseInt(existingPart.rows[0].quantity, 10)
-            : 0;
           const quantityChange = part.quantity - previousQuantity;
           if (quantityChange > availableQuantity) {
             throw {
@@ -534,12 +538,22 @@ const updateOrder = async (id, orderData) => {
           if (quantityChange > 0) {
             await partService.updatePartInventory(part.part_id, quantityChange);
           }
+        } else if (part.status === "Solicitado") {
+          const quantityChange = part.quantity - previousQuantity;
+          if (quantityChange > availableQuantity) {
+            throw {
+              status: 400,
+              message: `Inventario insuficiente para el repuesto ${part.part_id}. Disponible: ${availableQuantity}, Solicitado: ${quantityChange}`,
+            };
+          }
+          if (quantityChange !== 0) {
+            await client.query(
+              "UPDATE parts SET quantity_reserved = quantity_reserved + $1 WHERE id = $2",
+              [quantityChange, part.part_id]
+            );
+          }
         }
 
-        const existingPart = await client.query(
-          "SELECT * FROM order_parts WHERE order_id = $1 AND part_id = $2",
-          [id, part.part_id]
-        );
         if (existingPart.rows.length) {
           await client.query(
             `
@@ -575,17 +589,27 @@ const updateOrder = async (id, orderData) => {
               part.authorized_by || null,
             ]
           );
+          if (part.status === "Solicitado") {
+            await client.query(
+              "UPDATE parts SET quantity_reserved = quantity_reserved + $1 WHERE id = $2",
+              [part.quantity, part.part_id]
+            );
+          }
         }
       }
     } else {
       const partsToDelete = await client.query(
-        "SELECT part_id FROM order_parts WHERE order_id = $1 AND status = $2",
+        "SELECT part_id, quantity FROM order_parts WHERE order_id = $1 AND status = $2",
         [id, "Solicitado"]
       );
       for (const part of partsToDelete.rows) {
         await client.query(
           "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2",
           [id, part.part_id]
+        );
+        await client.query(
+          "UPDATE parts SET quantity_reserved = quantity_reserved - $1 WHERE id = $2",
+          [part.quantity, part.part_id]
         );
         await notificationService.deletePartRequestNotification(
           id,
@@ -879,50 +903,35 @@ const requestPart = async (orderId, part) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    console.log(
-      "[ORDER_SERVICE] Transacción iniciada para requestPart:",
-      orderId
-    );
 
     const orderResult = await client.query(
       "SELECT technician_id FROM orders WHERE id = $1",
       [orderId]
     );
     if (!orderResult.rows.length) {
-      console.error("[ORDER_SERVICE] Orden no encontrada para id:", orderId);
       throw { status: 404, message: "Orden no encontrada" };
     }
 
     if (!part.part_id || !part.quantity || !part.requested_by) {
-      console.error("[ORDER_SERVICE] Datos de repuesto inválidos:", part);
       throw { status: 400, message: "Datos de repuesto inválidos" };
     }
 
-    // Obtener precio y cantidad disponible desde parts
     const partData = await client.query(
-      "SELECT price, quantity AS available_quantity FROM parts WHERE id = $1",
+      "SELECT price, quantity, quantity_reserved FROM parts WHERE id = $1 FOR UPDATE",
       [part.part_id]
     );
     if (!partData.rows.length) {
-      console.error(
-        "[ORDER_SERVICE] Repuesto no encontrado en parts:",
-        part.part_id
-      );
       throw {
         status: 400,
         message: `Repuesto con ID ${part.part_id} no encontrado`,
       };
     }
     const partPrice = partData.rows[0].price;
-    const availableQuantity = parseInt(partData.rows[0].available_quantity, 10);
+    const availableQuantity =
+      partData.rows[0].quantity - partData.rows[0].quantity_reserved;
 
-    // Validar inventario
+    // Validar inventario disponible
     if (part.quantity > availableQuantity) {
-      console.error("[ORDER_SERVICE] Inventario insuficiente:", {
-        partId: part.part_id,
-        quantity: part.quantity,
-        availableQuantity,
-      });
       throw {
         status: 400,
         message: `Inventario insuficiente para el repuesto ${part.part_id}. Disponible: ${availableQuantity}, Solicitado: ${part.quantity}`,
@@ -948,15 +957,16 @@ const requestPart = async (orderId, part) => {
     ];
     const partResult = await client.query(partQuery, partValues);
 
-    await client.query("COMMIT");
-    console.log(
-      "[ORDER_SERVICE] Repuesto solicitado exitosamente:",
-      partResult.rows[0]
+    // Actualizar quantity_reserved
+    await client.query(
+      "UPDATE parts SET quantity_reserved = quantity_reserved + $1 WHERE id = $2",
+      [part.quantity, part.part_id]
     );
+
+    await client.query("COMMIT");
     return partResult.rows[0];
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error("[ORDER_SERVICE] Error al solicitar repuesto:", err);
     throw err.status
       ? err
       : {
@@ -966,7 +976,6 @@ const requestPart = async (orderId, part) => {
         };
   } finally {
     client.release();
-    console.log("[ORDER_SERVICE] Cliente de base de datos liberado");
   }
 };
 
@@ -974,56 +983,44 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    console.log("[ORDER_SERVICE] updatePartQuantity iniciado:", {
-      orderId,
-      partId,
-      quantity,
-    });
-
     const partResult = await client.query(
-      "SELECT status, quantity FROM order_parts WHERE order_id = $1 AND part_id = $2",
+      "SELECT status, quantity FROM order_parts WHERE order_id = $1 AND part_id = $2 FOR UPDATE",
       [orderId, partId]
     );
     if (!partResult.rows.length) {
-      console.error("[ORDER_SERVICE] Repuesto no encontrado:", {
-        orderId,
-        partId,
-      });
       throw { status: 404, message: "Repuesto no encontrado en la orden" };
     }
     if (partResult.rows[0].status !== "Solicitado") {
-      console.error(
-        "[ORDER_SERVICE] Repuesto no está en estado Solicitado:",
-        partResult.rows[0]
-      );
       throw {
         status: 400,
         message: "Solo se pueden editar repuestos en estado Solicitado",
       };
     }
+    const currentQuantity = partResult.rows[0].quantity;
 
-    // Obtener precio desde parts
     const partData = await client.query(
-      "SELECT price, quantity AS available_quantity FROM parts WHERE id = $1",
+      "SELECT price, quantity, quantity_reserved FROM parts WHERE id = $1 FOR UPDATE",
       [partId]
     );
     if (!partData.rows.length) {
-      console.error("[ORDER_SERVICE] Repuesto no encontrado en parts:", partId);
-      throw {
-        status: 400,
-        message: `Repuesto con ID ${partId} no encontrado`,
-      };
+      throw { status: 400, message: `Repuesto con ID ${partId} no encontrado` };
     }
     const partPrice = partData.rows[0].price;
-    const availableQuantity = parseInt(partData.rows[0].available_quantity, 10);
+    const availableQuantity =
+      partData.rows[0].quantity -
+      partData.rows[0].quantity_reserved +
+      currentQuantity;
 
     if (quantity === 0) {
-      console.log("[ORDER_SERVICE] Eliminando repuesto:", { orderId, partId });
       const deleteResult = await client.query(
         "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2 RETURNING *",
         [orderId, partId]
       );
-      console.log("[ORDER_SERVICE] Repuesto eliminado:", deleteResult.rows);
+      // Liberar quantity_reserved
+      await client.query(
+        "UPDATE parts SET quantity_reserved = quantity_reserved - $1 WHERE id = $2",
+        [currentQuantity, partId]
+      );
       await notificationService.deletePartRequestNotification(
         orderId,
         partId,
@@ -1032,38 +1029,27 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
     } else {
       // Validar inventario
       if (quantity > availableQuantity) {
-        console.error("[ORDER_SERVICE] Inventario insuficiente:", {
-          partId,
-          quantity,
-          availableQuantity,
-        });
         throw {
           status: 400,
           message: `Inventario insuficiente para el repuesto ${partId}. Disponible: ${availableQuantity}, Solicitado: ${quantity}`,
         };
       }
 
-      console.log("[ORDER_SERVICE] Actualizando cantidad:", {
-        orderId,
-        partId,
-        quantity,
-      });
       const updateResult = await client.query(
         "UPDATE order_parts SET quantity = $1, price = $2 WHERE order_id = $3 AND part_id = $4 RETURNING *",
         [quantity, partPrice, orderId, partId]
       );
-      console.log(
-        "[ORDER_SERVICE] Repuesto actualizado:",
-        updateResult.rows[0]
-      );
+      // Ajustar quantity_reserved
+      const quantityDiff = quantity - currentQuantity;
+      if (quantityDiff !== 0) {
+        await client.query(
+          "UPDATE parts SET quantity_reserved = quantity_reserved + $1 WHERE id = $2",
+          [quantityDiff, partId]
+        );
+      }
     }
 
     await client.query("COMMIT");
-    console.log("[ORDER_SERVICE] Transacción completada:", {
-      orderId,
-      partId,
-      quantity,
-    });
     return {
       message:
         quantity === 0
@@ -1073,10 +1059,6 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
     };
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error(
-      "[ORDER_SERVICE] Error al actualizar cantidad de repuesto:",
-      err
-    );
     throw err.status
       ? err
       : {
@@ -1086,7 +1068,6 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
         };
   } finally {
     client.release();
-    console.log("[ORDER_SERVICE] Cliente de base de datos liberado");
   }
 };
 
@@ -1095,11 +1076,26 @@ const requestPartReturn = async (orderId, partId, quantity) => {
   try {
     await client.query("BEGIN");
 
+    const partResult = await client.query(
+      "SELECT status, quantity FROM order_parts WHERE order_id = $1 AND part_id = $2 FOR UPDATE",
+      [orderId, partId]
+    );
+    if (!partResult.rows.length) {
+      throw { status: 404, message: "Repuesto no encontrado en la orden" };
+    }
+    if (partResult.rows[0].status !== "Aprobado") {
+      throw {
+        status: 400,
+        message: "Solo se pueden devolver repuestos en estado Aprobado",
+      };
+    }
+
     await client.query(
       `
       UPDATE order_parts
       SET status = $1, quantity = $2
       WHERE order_id = $3 AND part_id = $4
+      RETURNING *
     `,
       ["Devolución Solicitada", quantity, orderId, partId]
     );
@@ -1109,32 +1105,26 @@ const requestPartReturn = async (orderId, partId, quantity) => {
       [orderId]
     );
     if (!orderResult.rows.length) {
-      console.error("[ORDER_SERVICE] Orden no encontrada para id:", orderId);
       throw { status: 404, message: "Orden no encontrada" };
     }
     const technicianId = orderResult.rows[0].technician_id;
-    console.log("[ORDER_SERVICE] Técnico encontrado:", technicianId);
 
     const adminResult = await client.query(
       "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
     );
     if (!adminResult.rows.length) {
-      console.error("[ORDER_SERVICE] No se encontró un usuario administrador");
       throw { status: 500, message: "No se encontró un usuario administrador" };
     }
     const adminId = adminResult.rows[0].id;
-    console.log("[ORDER_SERVICE] Admin encontrado:", adminId);
 
-    const partResult = await client.query(
+    const partData = await client.query(
       "SELECT name FROM parts WHERE id = $1",
       [partId]
     );
-    if (!partResult.rows.length) {
-      console.error("[ORDER_SERVICE] Repuesto no encontrado con ID:", partId);
+    if (!partData.rows.length) {
       throw { status: 400, message: `Repuesto con ID ${partId} no encontrado` };
     }
-    const partName = partResult.rows[0].name || "Repuesto desconocido";
-    console.log("[ORDER_SERVICE] Nombre del repuesto:", partName);
+    const partName = partData.rows[0].name || "Repuesto desconocido";
 
     await notificationService.createNotification(
       {
@@ -1147,23 +1137,137 @@ const requestPartReturn = async (orderId, partId, quantity) => {
       },
       client
     );
-    console.log("[ORDER_SERVICE] Notificación creada para orden:", orderId);
 
     await client.query("COMMIT");
-    console.log(
-      "[ORDER_SERVICE] Transacción completada para requestPartReturn"
-    );
+    return { message: "Devolución solicitada exitosamente" };
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error(
-      "[ORDER_SERVICE] Error al solicitar devolución de repuesto:",
-      err
-    );
     throw err.status
       ? err
       : {
           status: 500,
           message: "Error al solicitar devolución de repuesto",
+          details: err.message,
+        };
+  } finally {
+    client.release();
+  }
+};
+
+const approvePartReturn = async (orderId, partId, status, authorizedBy) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    console.log("[ORDER_SERVICE] approvePartReturn iniciado:", {
+      orderId,
+      partId,
+      status,
+    });
+
+    const partResult = await client.query(
+      "SELECT status, quantity FROM order_parts WHERE order_id = $1 AND part_id = $2 FOR UPDATE",
+      [orderId, partId]
+    );
+    if (!partResult.rows.length) {
+      console.error("[ORDER_SERVICE] Repuesto no encontrado:", {
+        orderId,
+        partId,
+      });
+      throw { status: 404, message: "Repuesto no encontrado en la orden" };
+    }
+    if (partResult.rows[0].status !== "Devolución Solicitada") {
+      console.error(
+        "[ORDER_SERVICE] Repuesto no está en estado Devolución Solicitada:",
+        partResult.rows[0]
+      );
+      throw {
+        status: 400,
+        message: "El repuesto no está en estado Devolución Solicitada",
+      };
+    }
+    const quantity = partResult.rows[0].quantity;
+
+    const partData = await client.query(
+      "SELECT name FROM parts WHERE id = $1 FOR UPDATE",
+      [partId]
+    );
+    if (!partData.rows.length) {
+      console.error("[ORDER_SERVICE] Repuesto no encontrado en parts:", partId);
+      throw { status: 400, message: `Repuesto con ID ${partId} no encontrado` };
+    }
+    const partName = partData.rows[0].name || "Repuesto desconocido";
+
+    let result;
+    if (status === "Devolución Aprobada") {
+      // Eliminar el registro de order_parts
+      result = await client.query(
+        `
+        DELETE FROM order_parts
+        WHERE order_id = $1 AND part_id = $2
+        RETURNING *
+      `,
+        [orderId, partId]
+      );
+
+      // Restaurar quantity y liberar quantity_reserved
+      await client.query(
+        `
+        UPDATE parts
+        SET quantity = quantity + $1,
+            quantity_reserved = quantity_reserved - $1
+        WHERE id = $2
+      `,
+        [quantity, partId]
+      );
+    } else if (status === "Devolución Rechazada") {
+      // Actualizar el estado
+      result = await client.query(
+        `
+        UPDATE order_parts
+        SET status = $1, authorized_by = $2
+        WHERE order_id = $3 AND part_id = $4
+        RETURNING *
+      `,
+        [status, authorizedBy, orderId, partId]
+      );
+    } else {
+      throw { status: 400, message: "Estado de devolución inválido" };
+    }
+
+    const orderResult = await client.query(
+      "SELECT technician_id FROM orders WHERE id = $1",
+      [orderId]
+    );
+    if (!orderResult.rows.length) {
+      throw { status: 404, message: "Orden no encontrada" };
+    }
+    const technicianId = orderResult.rows[0].technician_id;
+
+    await notificationService.createNotification(
+      {
+        order_id: orderId,
+        from_user_id: authorizedBy,
+        to_user_id: technicianId,
+        message: `Devolución de ${partName} (${quantity}): ${status}`,
+        type: "part_return_status",
+        status: "Pendiente",
+      },
+      client
+    );
+
+    await client.query("COMMIT");
+    console.log(
+      "[ORDER_SERVICE] Transacción completada para approvePartReturn"
+    );
+    return result.rows[0];
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("[ORDER_SERVICE] Error al aprobar/rechazar devolución:", err);
+    throw err.status
+      ? err
+      : {
+          status: 500,
+          message: "Error al aprobar/rechazar devolución",
           details: err.message,
         };
   } finally {
@@ -1184,4 +1288,5 @@ module.exports = {
   requestPart,
   updatePartQuantity,
   requestPartReturn,
+  approvePartReturn,
 };

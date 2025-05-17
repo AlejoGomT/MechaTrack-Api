@@ -227,6 +227,19 @@ const requestPart = async (req, res) => {
   const { id } = req.params;
   const part = req.body;
   try {
+    if (!part.part_id || !part.quantity || !part.requested_by) {
+      return res.status(400).json({ message: "Datos de repuesto inválidos" });
+    }
+    const validStatuses = [
+      "Solicitado",
+      "Aprobado",
+      "Rechazado",
+      "Devolución Solicitada",
+      "Devolución Rechazada",
+    ];
+    if (part.status && !validStatuses.includes(part.status)) {
+      return res.status(400).json({ message: "Estado de repuesto inválido" });
+    }
     await orderService.requestPart(id, {
       part_id: part.part_id,
       quantity: parseInt(part.quantity, 10),
@@ -244,6 +257,9 @@ const updatePartQuantity = async (req, res) => {
   const { id, partId } = req.params;
   const { quantity } = req.body;
   try {
+    if (quantity === undefined || quantity < 0) {
+      return res.status(400).json({ message: "Cantidad inválida" });
+    }
     await orderService.updatePartQuantity(id, partId, parseInt(quantity, 10));
     res.json({ message: "Cantidad de repuesto actualizada exitosamente" });
   } catch (error) {
@@ -256,12 +272,44 @@ const requestPartReturn = async (req, res) => {
   const { id, partId } = req.params;
   const { quantity } = req.body;
   try {
+    if (!quantity || quantity <= 0) {
+      return res.status(400).json({ message: "Cantidad inválida" });
+    }
     await orderService.requestPartReturn(id, partId, parseInt(quantity, 10));
     res
       .status(201)
       .json({ message: "Solicitud de devolución enviada exitosamente" });
   } catch (error) {
     console.error("Error en requestPartReturn controller:", error);
+    res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
+const approvePartReturn = async (req, res) => {
+  const { id, partId } = req.params;
+  const { status } = req.body;
+  try {
+    if (
+      !status ||
+      !["Devolución Aprobada", "Devolución Rechazada"].includes(status)
+    ) {
+      return res.status(400).json({ message: "Estado de devolución inválido" });
+    }
+    const result = await orderService.approvePartReturn(
+      id,
+      partId,
+      status,
+      req.user.id
+    );
+    res.json({
+      message:
+        status === "Devolución Aprobada"
+          ? "Devolución aprobada y repuesto eliminado exitosamente"
+          : "Devolución rechazada exitosamente",
+      part: result,
+    });
+  } catch (error) {
+    console.error("Error en approvePartReturn controller:", error);
     res.status(error.status || 500).json({ message: error.message });
   }
 };
@@ -398,6 +446,7 @@ module.exports = {
   requestPart,
   updatePartQuantity,
   requestPartReturn,
+  approvePartReturn,
   deleteOrderImage,
   finalizeOrder,
 };
