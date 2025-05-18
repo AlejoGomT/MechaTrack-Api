@@ -53,55 +53,89 @@ exports.getOrderReport = async (orderId) => {
       SELECT 
           o.id, o.order_number, o.status, o.type, o.description, o.initial_diagnosis, o.tasks, o.images, o.created_at, o.finalized_at, o.updated_at,
           v.economic_number, v.brand, v.model, v.year, v.mileage, v.vin, v.branch, v.plate,
-          i.invoice_number, i.delivery_note_number, i.total, i.issued_at, ui.first_name AS issued_by_first_name, ui.last_name AS issued_by_last_name,
+          i.invoice_number, i.delivery_note_number, i.total, i.issued_at, 
+          ui.first_name AS issued_by_first_name, ui.last_name AS issued_by_last_name,
           u.first_name AS technician_first_name, u.last_name AS technician_last_name,
-          json_agg(
+          COALESCE((
+            SELECT json_agg(
               json_build_object(
                   'part_id', op.part_id,
-                  'name', p.name,
+                  'name', op.name,
                   'quantity', op.quantity,
                   'price', op.price,
                   'status', op.status,
-                  'requested_by', ur.first_name || ' ' || ur.last_name,
-                  'authorized_by', ua.first_name || ' ' || ua.last_name
+                  'requested_by', op.requested_by_name,
+                  'authorized_by', op.authorized_by_name
               )
-          ) AS parts,
-          json_agg(
+            )
+            FROM (
+              SELECT DISTINCT 
+                op.part_id, 
+                p.name, 
+                op.quantity, 
+                op.price, 
+                op.status, 
+                (ur.first_name || ' ' || ur.last_name) AS requested_by_name,
+                (ua.first_name || ' ' || ua.last_name) AS authorized_by_name
+              FROM order_parts op
+              JOIN parts p ON op.part_id = p.id
+              LEFT JOIN users ur ON op.requested_by = ur.id
+              LEFT JOIN users ua ON op.authorized_by = ua.id
+              WHERE op.order_id = $1
+            ) op
+          ), '[]') AS parts,
+          COALESCE((
+            SELECT json_agg(
               json_build_object(
                   'message', n.message,
                   'type', n.type,
                   'created_at', n.created_at,
-                  'from_user', uf.first_name || ' ' || uf.last_name,
-                  'to_user', ut.first_name || ' ' || ut.last_name,
+                  'from_user', n.from_user_name,
+                  'to_user', n.to_user_name,
                   'attachments', (
-                      SELECT json_agg(na.file_path)
-                      FROM notification_attachments na
-                      WHERE na.notification_id = n.id
+                    SELECT json_agg(na.file_path)
+                    FROM notification_attachments na
+                    WHERE na.notification_id = n.id
                   )
               )
-          ) AS notifications,
-          json_agg(
+            )
+            FROM (
+              SELECT DISTINCT ON (n.id)
+                n.id, 
+                n.message, 
+                n.type, 
+                n.created_at, 
+                (uf.first_name || ' ' || uf.last_name) AS from_user_name,
+                (ut.first_name || ' ' || ut.last_name) AS to_user_name
+              FROM notifications n
+              LEFT JOIN users uf ON n.from_user_id = uf.id
+              LEFT JOIN users ut ON n.to_user_id = ut.id
+              WHERE n.order_id = $1
+            ) n
+          ), '[]') AS notifications,
+          COALESCE((
+            SELECT json_agg(
               json_build_object(
                   'description', oh.description,
                   'date', oh.date,
                   'status', oh.status
               )
-          ) AS history
+            )
+            FROM (
+              SELECT DISTINCT 
+                oh.description, 
+                oh.date, 
+                oh.status
+              FROM order_history oh
+              WHERE oh.order_id = $1
+            ) oh
+          ), '[]') AS history
       FROM orders o
       JOIN vehicles v ON o.vehicle_economic_number = v.economic_number
       JOIN users u ON o.technician_id = u.id
       LEFT JOIN invoices i ON o.id = i.order_id
       LEFT JOIN users ui ON i.issued_by = ui.id
-      LEFT JOIN order_parts op ON o.id = op.order_id
-      LEFT JOIN parts p ON op.part_id = p.id
-      LEFT JOIN users ur ON op.requested_by = ur.id
-      LEFT JOIN users ua ON op.authorized_by = ua.id
-      LEFT JOIN notifications n ON o.id = n.order_id
-      LEFT JOIN users uf ON n.from_user_id = uf.id
-      LEFT JOIN users ut ON n.to_user_id = ut.id
-      LEFT JOIN order_history oh ON o.id = oh.order_id
       WHERE o.id = $1
-      GROUP BY o.id, v.economic_number, u.id, i.id, ui.id
     `;
     const result = await pool.query(query, [orderId]);
     if (result.rows.length === 0) {
