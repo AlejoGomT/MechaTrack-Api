@@ -35,10 +35,10 @@ const getNotifications = async (req, res) => {
   const { to_user_id, status, order_id, user_id } = req.query;
   try {
     const notifications = await notificationService.getNotifications({
-      to_user_id,
+      to_user_id: to_user_id || req.user.id,
       status,
       order_id,
-      user_id,
+      user_id: user_id || req.user.id,
     });
     console.log(
       "[notificationController] Notificaciones enviadas para order_id",
@@ -54,6 +54,30 @@ const getNotifications = async (req, res) => {
     );
     res.status(error.status || 500).json({
       message: error.message || "Error al obtener notificaciones",
+      details: error.stack,
+    });
+  }
+};
+
+const getMessagesByOrderId = async (req, res) => {
+  try {
+    const { order_id } = req.params;
+    const user_id = req.user.id;
+    const messages = await notificationService.getMessagesByOrderId(
+      order_id,
+      user_id
+    );
+    console.log(
+      "[notificationController] Mensajes enviados para order_id",
+      order_id,
+      ":",
+      messages.length
+    );
+    res.json(messages);
+  } catch (error) {
+    console.error("[notificationController] Error al obtener mensajes:", error);
+    res.status(error.status || 500).json({
+      message: error.message || "Error al obtener mensajes",
       details: error.stack,
     });
   }
@@ -116,7 +140,7 @@ const createNotification = async (req, res) => {
 };
 
 const getConversations = async (req, res) => {
-  const user_id = req.query.user_id || req.user.user_id;
+  const user_id = req.query.user_id || req.user.id;
   if (!user_id) {
     return res.status(400).json({ message: "user_id es requerido" });
   }
@@ -193,4 +217,5 @@ module.exports = {
   createNotification,
   getConversations,
   updateNotification,
+  getMessagesByOrderId,
 };

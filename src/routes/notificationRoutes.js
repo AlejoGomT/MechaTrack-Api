@@ -9,6 +9,11 @@ router.get(
   authenticateToken,
   notificationController.getConversations
 );
+router.get(
+  "/order/:order_id",
+  authenticateToken,
+  notificationController.getMessagesByOrderId
+);
 router.post("/", authenticateToken, notificationController.createNotification);
 router.put(
   "/:id",

@@ -118,9 +118,11 @@ exports.getOrderReportPdf = async (req, res) => {
             .font("Regular")
             .fontSize(10)
             .fillColor("#000000")
-            .text(cell, 55 + sumWidths(columnWidths, 0, i), currentY + 5, {
+            .text(cell, 55 + sumWidths(columnWidths, 0, i), currentY + 3, {
               width: columnWidths[i],
+              height: rowHeight - 5,
               align: i === 0 ? "left" : "center",
+              ellipsis: true,
             });
         });
         doc
@@ -154,7 +156,7 @@ exports.getOrderReportPdf = async (req, res) => {
       .fillColor(colors.backgroundDark)
       .font("Bold")
       .fontSize(14)
-      .text("Detalles de la Orden", { align: "center" });
+      .text("Detalles de la Orden", 50, doc.y);
     doc.moveDown(0.5);
 
     const statusVariant =

@@ -1,4 +1,5 @@
 const pool = require("../config/database");
+const { io } = require("../index");
 
 const getNotifications = async ({ to_user_id, status, order_id, user_id }) => {
   try {
@@ -21,19 +22,18 @@ const getNotifications = async ({ to_user_id, status, order_id, user_id }) => {
       query += ` AND n.order_id = $${paramIndex}`;
       values.push(order_id);
       paramIndex++;
-      // Filtrar solo los tipos de mensajes permitidos cuando se solicita por order_id
       query += ` AND n.type IN (
-      'message',
-      'part_request',
-      'closure_request',
-      'part_approval',
-      'part_rejection',
-      'closure_approval',
-      'closure_rejection',
-      'client_update',
-      'invoice_complete',
-      'part_return_request',
-      'order_creation'
+        'message',
+        'part_request',
+        'closure_request',
+        'part_approval',
+        'part_rejection',
+        'closure_approval',
+        'closure_rejection',
+        'client_update',
+        'invoice_complete',
+        'part_return_request',
+        'order_creation'
       )`;
     }
     if (user_id) {
@@ -142,11 +142,37 @@ const createNotification = async (notificationData, client = null) => {
       values
     );
     const result = await queryClient.query(query, values);
-    console.log(
-      "[notificationService] Notificación insertada:",
-      result.rows[0]
-    );
-    return result.rows[0];
+    const notification = result.rows[0];
+    console.log("[notificationService] Notificación insertada:", notification);
+
+    // Enviar notificación por Socket.IO
+    const socketNotification = {
+      id: notification.id,
+      orderId: notification.order_id,
+      fromUserId: notification.from_user_id,
+      toUserId: notification.to_user_id,
+      message: notification.message,
+      type: notification.type,
+      status: notification.status,
+      details: notification.details,
+      timestamp: notification.created_at.toISOString(),
+    };
+
+    if (to_user_id) {
+      // Enviar a un usuario específico
+      io.to(to_user_id).emit("notification", socketNotification);
+    } else if (type === "order_creation") {
+      // Enviar a admin
+      io.to("admin").emit("notification", socketNotification);
+    } else if (type === "invoice_complete") {
+      // Enviar a secretary
+      io.to("secretary").emit("notification", socketNotification);
+    } else {
+      // Enviar a todos
+      io.emit("notification", socketNotification);
+    }
+
+    return notification;
   } catch (err) {
     console.error("[notificationService] Error al crear notificación:", err);
     throw {
@@ -178,11 +204,30 @@ const updateNotification = async (id, updates) => {
       );
       throw { status: 404, message: "Notificación no encontrada" };
     }
+    const notification = result.rows[0];
     console.log(
       "[notificationService] Notificación actualizada:",
-      result.rows[0]
+      notification
     );
-    return result.rows[0];
+
+    // Enviar actualización por Socket.IO
+    const socketNotification = {
+      id: notification.id,
+      orderId: notification.order_id,
+      fromUserId: notification.from_user_id,
+      toUserId: notification.to_user_id,
+      message: notification.message,
+      type: notification.type,
+      status: notification.status,
+      details: notification.details,
+      timestamp: notification.updated_at.toISOString(),
+    };
+
+    if (notification.to_user_id) {
+      io.to(notification.to_user_id).emit("notification", socketNotification);
+    }
+
+    return notification;
   } catch (error) {
     console.error(
       "[notificationService] Error al actualizar notificación:",
