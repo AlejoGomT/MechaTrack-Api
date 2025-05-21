@@ -1,5 +1,5 @@
 const pool = require("../config/database");
-const { io } = require("../index");
+const socket = require("../socket");
 
 const getNotifications = async ({ to_user_id, status, order_id, user_id }) => {
   try {
@@ -145,7 +145,7 @@ const createNotification = async (notificationData, client = null) => {
     const notification = result.rows[0];
     console.log("[notificationService] Notificación insertada:", notification);
 
-    // Enviar notificación por Socket.IO
+    // Enviar notificación por Socket.IO solo si io está disponible
     const socketNotification = {
       id: notification.id,
       orderId: notification.order_id,
@@ -158,18 +158,39 @@ const createNotification = async (notificationData, client = null) => {
       timestamp: notification.created_at.toISOString(),
     };
 
-    if (to_user_id) {
-      // Enviar a un usuario específico
-      io.to(to_user_id).emit("notification", socketNotification);
-    } else if (type === "order_creation") {
-      // Enviar a admin
-      io.to("admin").emit("notification", socketNotification);
-    } else if (type === "invoice_complete") {
-      // Enviar a secretary
-      io.to("secretary").emit("notification", socketNotification);
+    const io = socket.getIo();
+    if (io && typeof io.to === "function") {
+      // Emitir a la sala de la orden
+      io.to(`order_${order_id}`).emit("notification", socketNotification);
+      console.log(
+        "[notificationService] Notificación emitida a order_",
+        order_id,
+        ":",
+        socketNotification
+      );
+
+      // Emitir a usuarios y roles específicos
+      if (to_user_id) {
+        io.to(to_user_id).emit("notification", socketNotification);
+        console.log(
+          "[notificationService] Notificación emitida a usuario:",
+          to_user_id
+        );
+      }
+      if (type === "order_creation") {
+        io.to("admin").emit("notification", socketNotification);
+        console.log("[notificationService] Notificación emitida a rol: admin");
+      }
+      if (type === "invoice_complete") {
+        io.to("secretary").emit("notification", socketNotification);
+        console.log(
+          "[notificationService] Notificación emitida a rol: secretary"
+        );
+      }
     } else {
-      // Enviar a todos
-      io.emit("notification", socketNotification);
+      console.warn(
+        "[notificationService] Socket.IO no está disponible, no se emitieron notificaciones"
+      );
     }
 
     return notification;
@@ -185,6 +206,12 @@ const createNotification = async (notificationData, client = null) => {
 const updateNotification = async (id, updates) => {
   const { status } = updates;
   try {
+    console.log(
+      "[notificationService] Intentando actualizar notificación ID:",
+      id,
+      "con status:",
+      status
+    );
     const query = `
       UPDATE notifications
       SET status = $1, updated_at = $2
@@ -223,15 +250,29 @@ const updateNotification = async (id, updates) => {
       timestamp: notification.updated_at.toISOString(),
     };
 
-    if (notification.to_user_id) {
-      io.to(notification.to_user_id).emit("notification", socketNotification);
+    const io = socket.getIo();
+    if (io && typeof io.to === "function") {
+      io.to(`order_${notification.order_id}`).emit(
+        "notification",
+        socketNotification
+      );
+      if (notification.to_user_id) {
+        io.to(notification.to_user_id).emit("notification", socketNotification);
+      }
+    } else {
+      console.warn(
+        "[notificationService] Socket.IO no está disponible, no se emitieron notificaciones"
+      );
     }
 
     return notification;
   } catch (error) {
     console.error(
-      "[notificationService] Error al actualizar notificación:",
-      error
+      "[notificationService] Error al actualizar notificación ID:",
+      id,
+      "Error:",
+      error.message,
+      error.stack
     );
     throw {
       status: error.status || 500,

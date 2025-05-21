@@ -21,6 +21,17 @@ const getParts = async (req, res) => {
   }
 };
 
+const getPartById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const part = await partService.getPartById(id);
+    res.json(part);
+  } catch (error) {
+    console.error("[partController] Error al obtener repuesto:", error);
+    res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
 const createPart = async (req, res) => {
   const { id, name, description, quantity, price, compatible_models } =
     req.body;
@@ -127,6 +138,7 @@ const updatePartInventory = async (req, res) => {
 
 module.exports = {
   getParts,
+  getPartById,
   createPart,
   updatePart,
   deletePart,

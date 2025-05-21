@@ -37,6 +37,30 @@ const getParts = async (model, page = 1, limit = 10) => {
   }
 };
 
+const getPartById = async (id) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT id, name, quantity, quantity_reserved, price
+      FROM parts
+      WHERE id = $1
+      `,
+      [id]
+    );
+    if (result.rows.length === 0) {
+      throw { status: 404, message: `Repuesto con ID ${id} no encontrado` };
+    }
+    console.log("[partService] Repuesto obtenido:", result.rows[0]);
+    return result.rows[0];
+  } catch (error) {
+    console.error("[partService] Error al obtener repuesto:", error);
+    throw {
+      status: error.status || 500,
+      message: `Error al obtener repuesto: ${error.message}`,
+    };
+  }
+};
+
 const createPart = async (partData) => {
   const { id, name, description, quantity, price, image, compatible_models } =
     partData;
@@ -203,6 +227,7 @@ const updatePartInventory = async (partId, quantityChange) => {
 
 module.exports = {
   getParts,
+  getPartById,
   createPart,
   updatePart,
   deletePart,

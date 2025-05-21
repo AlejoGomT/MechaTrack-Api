@@ -34,7 +34,6 @@ const upload = multer({
   },
 }).single("image");
 
-// Middleware para subida opcional
 const optionalUpload = (req, res, next) => {
   upload(req, res, (err) => {
     if (err instanceof multer.MulterError) {
@@ -55,6 +54,12 @@ router.get(
   authenticateToken,
   restrictTo("admin", "technician"),
   partController.getParts
+);
+router.get(
+  "/:id",
+  authenticateToken,
+  restrictTo("admin", "technician"),
+  partController.getPartById
 );
 router.post(
   "/",

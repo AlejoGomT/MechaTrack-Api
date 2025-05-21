@@ -4,6 +4,8 @@ const { Server } = require("socket.io");
 const app = require("./app");
 const config = require("./config/config");
 const jwt = require("jsonwebtoken");
+const socket = require("./socket"); // Importar socket.js
+const notificationService = require("./services/notificationService");
 
 // Crear servidor HTTP
 const server = http.createServer(app);
@@ -11,11 +13,14 @@ const server = http.createServer(app);
 // Configurar Socket.IO
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173", // Frontend en puerto 5173
-    methods: ["GET", "POST"],
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
   },
 });
+
+// Inicializar io en socket.js
+socket.init(io);
 
 // Autenticación de Socket.IO con JWT
 io.use((socket, next) => {
@@ -41,9 +46,15 @@ io.on("connection", (socket) => {
   console.log(`Usuario ${socket.userId} conectado (Rol: ${socket.role})`);
 
   // Unir al usuario a sus salas
-  socket.join(socket.userId); // Sala individual
-  socket.join(socket.role); // Sala por rol (admin, secretary, etc.)
+  socket.join(socket.userId);
+  socket.join(socket.role);
   clients.set(socket.userId, socket);
+
+  // Manejar unión a salas de órdenes
+  socket.on("joinOrder", (orderId) => {
+    socket.join(`order_${orderId}`);
+    console.log(`[Socket] Usuario ${socket.userId} se unió a order_${orderId}`);
+  });
 
   // Enviar mensaje de bienvenida
   socket.emit("welcome", `Bienvenido, usuario ${socket.userId}`);
@@ -53,17 +64,14 @@ io.on("connection", (socket) => {
     "message",
     async ({ toUserId, orderId, message, type = "message" }) => {
       try {
-        // Crear notificación en la base de datos
-        const notification =
-          await require("./services/notificationService").createNotification({
-            order_id: orderId,
-            from_user_id: socket.userId,
-            to_user_id: toUserId,
-            message,
-            type,
-            status: "Pendiente",
-          });
-        // La notificación se emite en notificationService.js
+        const notification = await notificationService.createNotification({
+          order_id: orderId,
+          from_user_id: socket.userId,
+          to_user_id: toUserId,
+          message,
+          type,
+          status: "Pendiente",
+        });
         socket.emit("messageSent", {
           message: "Mensaje enviado",
           notification,
@@ -88,8 +96,8 @@ io.on("connection", (socket) => {
   });
 });
 
-// Exportar io para usarlo en otros módulos
-module.exports = { server, io };
+// Exportar server para usarlo en otros módulos
+module.exports = { server, io }; // Mantener io por compatibilidad, pero socket.js es la fuente principal
 
 // Iniciar el servidor
 server.listen(config.port, () => {

@@ -84,10 +84,6 @@ router.put(
       const { id, partId } = req.params;
       const { quantity, status, authorized_by } = req.body;
 
-      if (!quantity || quantity < 0) {
-        return res.status(400).json({ message: "Cantidad inválida" });
-      }
-
       // Validar estado
       const validStatuses = [
         "Solicitado",
