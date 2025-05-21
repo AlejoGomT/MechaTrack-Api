@@ -22,6 +22,9 @@ const io = new Server(server, {
 // Inicializar io en socket.js
 socket.init(io);
 
+// Hacer que io esté disponible en los controladores
+app.set("io", socket.getIo());
+
 // Autenticación de Socket.IO con JWT
 io.use((socket, next) => {
   const token = socket.handshake.query.token;

@@ -201,6 +201,11 @@ router.put(
 
         // Emitir notificación Socket.IO
         if (status === "Aprobado" || status === "Rechazado") {
+          console.log(
+            "[orderRoutes] Buscando notificación para order_id: %s, part_id: %s",
+            id,
+            partId
+          );
           const notificationResult = await pool.query(
             `SELECT * FROM notifications
              WHERE order_id = $1 AND type IN ('part_approval', 'part_rejection')
@@ -210,6 +215,7 @@ router.put(
           );
           if (notificationResult.rows[0]) {
             const io = req.app.get("io");
+            console.log("[orderRoutes] Instancia io disponible: %s", !!io);
             if (io) {
               const socketNotification = {
                 id: notificationResult.rows[0].id,
@@ -235,7 +241,15 @@ router.put(
                 ":",
                 socketNotification
               );
+            } else {
+              console.error("[orderRoutes] Instancia io no disponible");
             }
+          } else {
+            console.warn(
+              "[orderRoutes] No se encontró notificación para order_id: %s, part_id: %s",
+              id,
+              partId
+            );
           }
         }
 

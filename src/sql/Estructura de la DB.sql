@@ -172,15 +172,28 @@ DECLARE
     notification_details JSONB;
     existing_notification RECORD;
 BEGIN
+    RAISE NOTICE 'Ejecutando create_order_part_notification para order_id: %, part_id: %, status: %', p_order_id, p_part_id, p_status;
+
     -- Obtener el nombre de la parte
     SELECT name INTO part_name FROM parts WHERE id = p_part_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Repuesto con ID % no encontrado', p_part_id;
+    END IF;
+
     -- Obtener el ID del técnico de la orden
     SELECT o.technician_id INTO technician_id FROM orders o WHERE o.id = p_order_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Orden con ID % no encontrada', p_order_id;
+    END IF;
+
     -- Determinar el ID del administrador
     IF p_authorized_by IS NOT NULL THEN
         admin_id := p_authorized_by;
     ELSE
         SELECT id INTO admin_id FROM users WHERE role = 'admin' LIMIT 1;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'No se encontró un usuario con rol admin';
+        END IF;
     END IF;
 
     IF p_status = 'Solicitado' THEN
@@ -203,6 +216,7 @@ BEGIN
                 'quantity', p_quantity,
                 'price', p_price
             );
+            RAISE NOTICE 'Insertando notificación part_request para order_id: %, part_id: %', p_order_id, p_part_id;
             INSERT INTO notifications (
                 order_id,
                 from_user_id,
@@ -226,32 +240,36 @@ BEGIN
                 CURRENT_TIMESTAMP
             );
             -- Reservar cantidad en parts
+            RAISE NOTICE 'Actualizando quantity_reserved para part_id: %', p_part_id;
             UPDATE parts
             SET quantity_reserved = quantity_reserved + p_quantity
             WHERE id = p_part_id;
         END IF;
 
     ELSIF p_status = 'Aprobado' THEN
-        -- Buscar la notificación part_request existente
+        -- Buscar la notificación part_request más reciente, sin restringir por status
         SELECT * INTO existing_notification
         FROM notifications
         WHERE order_id = p_order_id
           AND type = 'part_request'
           AND (details->>'part_id')::text = p_part_id::text
-          AND status = 'Pendiente'
+        ORDER BY created_at DESC
         LIMIT 1;
+
+        -- Crear o actualizar notificación part_approval
+        notification_type := 'part_approval';
+        notification_message := format('Repuesto aprobado: %s (%s)', part_name, p_quantity);
+        notification_details := jsonb_build_object(
+            'order_id', p_order_id,
+            'part_id', p_part_id,
+            'quantity', p_quantity,
+            'price', p_price,
+            'authorized_by', p_authorized_by
+        );
 
         IF FOUND THEN
             -- Actualizar la notificación existente a part_approval
-            notification_type := 'part_approval';
-            notification_message := format('Repuesto aprobado: %s (%s)', part_name, p_quantity);
-            notification_details := jsonb_build_object(
-                'order_id', p_order_id,
-                'part_id', p_part_id,
-                'quantity', p_quantity,
-                'price', p_price,
-                'authorized_by', p_authorized_by
-            );
+            RAISE NOTICE 'Actualizando notificación a part_approval para order_id: %, part_id: %, notification_id: %', p_order_id, p_part_id, existing_notification.id;
             UPDATE notifications
             SET
                 type = notification_type,
@@ -262,36 +280,66 @@ BEGIN
                 details = notification_details,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = existing_notification.id;
-            -- Descontar order_parts.quantity de parts.quantity y parts.quantity_reserved
-            UPDATE parts
-            SET quantity = quantity - p_quantity,
-                quantity_reserved = quantity_reserved - p_quantity
-            WHERE id = p_part_id;
+        ELSE
+            -- Crear nueva notificación part_approval
+            RAISE NOTICE 'Creando nueva notificación part_approval para order_id: %, part_id: %', p_order_id, p_part_id;
+            INSERT INTO notifications (
+                order_id,
+                from_user_id,
+                to_user_id,
+                message,
+                type,
+                status,
+                details,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                p_order_id,
+                p_authorized_by,
+                technician_id,
+                notification_message,
+                notification_type,
+                'Pendiente',
+                notification_details,
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
+            );
         END IF;
+
+        -- Descontar order_parts.quantity de parts.quantity y parts.quantity_reserved
+        RAISE NOTICE 'Descontando quantity y quantity_reserved para part_id: %', p_part_id;
+        UPDATE parts
+        SET quantity = quantity - p_quantity,
+            quantity_reserved = quantity_reserved - p_quantity
+        WHERE id = p_part_id;
 
     ELSIF p_status = 'Rechazado' THEN
         IF p_note IS NULL THEN
             RAISE EXCEPTION 'El motivo de rechazo es obligatorio';
         END IF;
-        -- Buscar la notificación part_request existente
+        -- Buscar la notificación part_request más reciente, sin restringir por status
         SELECT * INTO existing_notification
         FROM notifications
         WHERE order_id = p_order_id
           AND type = 'part_request'
           AND (details->>'part_id')::text = p_part_id::text
-          AND status = 'Pendiente'
+        ORDER BY created_at DESC
         LIMIT 1;
+
+        -- Crear o actualizar notificación part_rejection
+        notification_type := 'part_rejection';
+        notification_message := format('Repuesto rechazado: %s (%s)', part_name, p_quantity);
+        notification_details := jsonb_build_object(
+            'order_id', p_order_id,
+            'part_id', p_part_id,
+            'quantity', p_quantity,
+            'reason', p_note
+        );
 
         IF FOUND THEN
             -- Actualizar la notificación existente a part_rejection
-            notification_type := 'part_rejection';
-            notification_message := format('Repuesto rechazado: %s (%s)', part_name, p_quantity);
-            notification_details := jsonb_build_object(
-                'order_id', p_order_id,
-                'part_id', p_part_id,
-                'quantity', p_quantity,
-                'reason', p_note
-            );
+            RAISE NOTICE 'Actualizando notificación a part_rejection para order_id: %, part_id: %, notification_id: %', p_order_id, p_part_id, existing_notification.id;
             UPDATE notifications
             SET
                 type = notification_type,
@@ -302,11 +350,38 @@ BEGIN
                 details = notification_details,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = existing_notification.id;
-            -- Liberar order_parts.quantity de parts.quantity_reserved
-            UPDATE parts
-            SET quantity_reserved = GREATEST(quantity_reserved - p_quantity, 0)
-            WHERE id = p_part_id;
+        ELSE
+            -- Crear nueva notificación part_rejection
+            RAISE NOTICE 'Creando nueva notificación part_rejection para order_id: %, part_id: %', p_order_id, p_part_id;
+            INSERT INTO notifications (
+                order_id,
+                from_user_id,
+                to_user_id,
+                message,
+                type,
+                status,
+                details,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                p_order_id,
+                p_authorized_by,
+                technician_id,
+                notification_message,
+                notification_type,
+                'Pendiente',
+                notification_details,
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
+            );
         END IF;
+
+        -- Liberar order_parts.quantity de parts.quantity_reserved
+        RAISE NOTICE 'Liberando quantity_reserved para part_id: %', p_part_id;
+        UPDATE parts
+        SET quantity_reserved = GREATEST(quantity_reserved - p_quantity, 0)
+        WHERE id = p_part_id;
     END IF;
 END;
 $$;
@@ -336,6 +411,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.notify_order_part_insert()
 RETURNS TRIGGER AS $$
 BEGIN
+    RAISE NOTICE 'Trigger notify_order_part_insert ejecutado para order_id: %, part_id: %, status: %', NEW.order_id, NEW.part_id, NEW.status;
     IF NEW.status = 'Solicitado' THEN
         PERFORM create_order_part_notification(
             NEW.order_id,
@@ -356,6 +432,7 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION public.notify_order_part_update()
 RETURNS TRIGGER AS $$
 BEGIN
+    RAISE NOTICE 'Trigger notify_order_part_update ejecutado para order_id: %, part_id: %, old_status: %, new_status: %', NEW.order_id, NEW.part_id, OLD.status, NEW.status;
     IF NEW.status IN ('Aprobado', 'Rechazado') AND OLD.status != NEW.status THEN
         PERFORM create_order_part_notification(
             NEW.order_id,
