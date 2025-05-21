@@ -82,9 +82,11 @@ router.put(
   async (req, res) => {
     try {
       const { id, partId } = req.params;
-      const { quantity, status, authorized_by } = req.body;
+      const { quantity, status, authorized_by, note } = req.body;
+      const userRole = req.user.role;
+      const userId = req.user.id;
 
-      // Validar estado
+      // Validar entrada
       const validStatuses = [
         "Solicitado",
         "Aprobado",
@@ -95,15 +97,20 @@ router.put(
       if (status && !validStatuses.includes(status)) {
         return res.status(400).json({ message: "Estado de repuesto inválido" });
       }
+      if (!quantity || quantity < 0) {
+        return res.status(400).json({ message: "Cantidad inválida" });
+      }
 
-      // Para técnicos, solo permitir cambios en estado "Solicitado"
+      // Obtener el repuesto actual
       const partCheck = await orderService.getOrderById(id);
       const part = partCheck?.parts.find((p) => p.part_id === partId);
       if (!part) {
         return res.status(404).json({ message: "Repuesto no encontrado" });
       }
+
+      // Restricciones para técnicos
       if (
-        req.user.role === "technician" &&
+        userRole === "technician" &&
         part.status !== "Solicitado" &&
         (!status || status !== "Solicitado")
       ) {
@@ -112,37 +119,142 @@ router.put(
         });
       }
 
-      // Si es eliminación (quantity = 0)
+      // Manejar eliminación (quantity = 0)
       if (quantity === 0) {
         const result = await orderService.updatePartQuantity(id, partId, 0);
         return res.json(result);
       }
 
-      // Si se aprueba, el admin debe proporcionar authorized_by
-      if (status === "Aprobado" && req.user.role === "admin") {
+      // Validar inventario para aprobación
+      if (status === "Aprobado" && userRole === "admin") {
         if (!authorized_by) {
           return res.status(400).json({
             message: "Se requiere el ID del usuario que autoriza",
           });
         }
-        const partData = {
-          part_id: partId,
-          quantity: parseInt(quantity, 10),
-          status: "Aprobado",
-          requested_by: part.requested_by_id || req.user.id,
-          authorized_by,
-        };
-        await orderService.requestPart(id, partData);
-        return res.json({ message: "Repuesto aprobado exitosamente" });
+        const partData = await pool.query(
+          "SELECT quantity, quantity_reserved FROM parts WHERE id = $1 FOR UPDATE",
+          [partId]
+        );
+        if (!partData.rows.length) {
+          return res.status(400).json({
+            message: `Repuesto con ID ${partId} no encontrado`,
+          });
+        }
+        const availableQuantity =
+          partData.rows[0].quantity -
+          partData.rows[0].quantity_reserved +
+          part.quantity;
+        if (quantity > availableQuantity) {
+          return res.status(400).json({
+            message: `Inventario insuficiente para el repuesto ${partId}. Disponible: ${availableQuantity}, Solicitado: ${quantity}`,
+          });
+        }
       }
 
-      // Actualización estándar (técnico o admin)
-      const result = await orderService.updatePartQuantity(
-        id,
-        partId,
-        parseInt(quantity, 10)
-      );
-      res.json(result);
+      // Validar note para rechazo
+      if (status === "Rechazado" && !note) {
+        return res.status(400).json({
+          message: "El motivo de rechazo es obligatorio",
+        });
+      }
+
+      // Actualizar order_parts
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const updateQuery = `
+          UPDATE order_parts
+          SET quantity = $1, status = $2, authorized_by = $3, note = $4
+          WHERE order_id = $5 AND part_id = $6
+          RETURNING *
+        `;
+        const updateValues = [
+          quantity,
+          status || part.status,
+          status === "Aprobado" || status === "Rechazado"
+            ? authorized_by || userId
+            : part.authorized_by_id,
+          status === "Rechazado" ? note : null,
+          id,
+          partId,
+        ];
+        const updateResult = await client.query(updateQuery, updateValues);
+        if (!updateResult.rows.length) {
+          throw new Error("No se pudo actualizar el repuesto");
+        }
+
+        // Ajustar quantity_reserved si es necesario
+        const quantityDiff = quantity - part.quantity;
+        if (
+          quantityDiff !== 0 &&
+          status !== "Aprobado" &&
+          status !== "Rechazado"
+        ) {
+          await client.query(
+            "UPDATE parts SET quantity_reserved = GREATEST(quantity_reserved + $1, 0) WHERE id = $2",
+            [quantityDiff, partId]
+          );
+        }
+
+        await client.query("COMMIT");
+
+        // Emitir notificación Socket.IO
+        if (status === "Aprobado" || status === "Rechazado") {
+          const notificationResult = await pool.query(
+            `SELECT * FROM notifications
+             WHERE order_id = $1 AND type IN ('part_approval', 'part_rejection')
+             AND (details->>'part_id')::text = $2
+             ORDER BY updated_at DESC LIMIT 1`,
+            [id, partId]
+          );
+          if (notificationResult.rows[0]) {
+            const io = req.app.get("io");
+            if (io) {
+              const socketNotification = {
+                id: notificationResult.rows[0].id,
+                orderId: id,
+                fromUserId: notificationResult.rows[0].from_user_id,
+                toUserId: notificationResult.rows[0].to_user_id,
+                message: notificationResult.rows[0].message,
+                type: notificationResult.rows[0].type,
+                status: notificationResult.rows[0].status,
+                details: notificationResult.rows[0].details,
+                timestamp: notificationResult.rows[0].updated_at,
+              };
+              io.to(`order_${id}`).emit("notification", socketNotification);
+              if (notificationResult.rows[0].to_user_id) {
+                io.to(notificationResult.rows[0].to_user_id).emit(
+                  "notification",
+                  socketNotification
+                );
+              }
+              console.log(
+                "[orderRoutes] Notificación emitida para order_",
+                id,
+                ":",
+                socketNotification
+              );
+            }
+          }
+        }
+
+        res.json({
+          message: `Repuesto ${
+            status === "Aprobado"
+              ? "aprobado"
+              : status === "Rechazado"
+              ? "rechazado"
+              : "actualizado"
+          } exitosamente`,
+          part: updateResult.rows[0],
+        });
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+      } finally {
+        client.release();
+      }
     } catch (err) {
       console.error("[orderRoutes] Error al actualizar repuesto:", err);
       res.status(err.status || 500).json({ message: err.message });
@@ -162,7 +274,7 @@ router.post(
   async (req, res) => {
     try {
       const { id, partId } = req.params;
-      const { status } = req.body; // "Devolución Aprobada" o "Devolución Rechazada"
+      const { status } = req.body;
       const authorizedBy = req.user.id;
 
       const result = await orderService.approvePartReturn(
