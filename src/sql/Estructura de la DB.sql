@@ -150,8 +150,17 @@ ALTER TABLE ONLY public.notifications ALTER COLUMN id SET DEFAULT nextval('publi
 ALTER TABLE ONLY public.order_history ALTER COLUMN id SET DEFAULT nextval('public.order_history_id_seq'::regclass);
 ALTER TABLE ONLY public.order_parts ALTER COLUMN id SET DEFAULT nextval('public.order_parts_id_seq'::regclass);
 
--- Creating functions
-CREATE FUNCTION public.create_order_part_notification(p_order_id character varying, p_part_id character varying, p_quantity integer, p_status character varying, p_price numeric, p_note text, p_requested_by character varying, p_authorized_by character varying) RETURNS void
+-- Actualizar la función create_order_part_notification
+CREATE OR REPLACE FUNCTION public.create_order_part_notification(
+    p_order_id character varying,
+    p_part_id character varying,
+    p_quantity integer,
+    p_status character varying,
+    p_price numeric,
+    p_note text,
+    p_requested_by character varying,
+    p_authorized_by character varying
+) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
@@ -163,8 +172,11 @@ DECLARE
     notification_details JSONB;
     existing_notification RECORD;
 BEGIN
+    -- Obtener el nombre de la parte
     SELECT name INTO part_name FROM parts WHERE id = p_part_id;
+    -- Obtener el ID del técnico de la orden
     SELECT o.technician_id INTO technician_id FROM orders o WHERE o.id = p_order_id;
+    -- Determinar el ID del administrador
     IF p_authorized_by IS NOT NULL THEN
         admin_id := p_authorized_by;
     ELSE
@@ -172,6 +184,7 @@ BEGIN
     END IF;
 
     IF p_status = 'Solicitado' THEN
+        -- Verificar si ya existe una notificación part_request pendiente
         SELECT * INTO existing_notification
         FROM notifications
         WHERE order_id = p_order_id
@@ -181,6 +194,7 @@ BEGIN
         LIMIT 1;
 
         IF NOT FOUND THEN
+            -- Crear nueva notificación para part_request
             notification_type := 'part_request';
             notification_message := format('Solicitud de repuesto: %s (%s)', part_name, p_quantity);
             notification_details := jsonb_build_object(
@@ -189,76 +203,111 @@ BEGIN
                 'quantity', p_quantity,
                 'price', p_price
             );
-            INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
-            VALUES (p_order_id, p_requested_by, admin_id, notification_message, notification_type, 'Pendiente', notification_details, CURRENT_TIMESTAMP);
+            INSERT INTO notifications (
+                order_id,
+                from_user_id,
+                to_user_id,
+                message,
+                type,
+                status,
+                details,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                p_order_id,
+                p_requested_by,
+                admin_id,
+                notification_message,
+                notification_type,
+                'Pendiente',
+                notification_details,
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
+            );
+            -- Reservar cantidad en parts
+            UPDATE parts
+            SET quantity_reserved = quantity_reserved + p_quantity
+            WHERE id = p_part_id;
         END IF;
 
     ELSIF p_status = 'Aprobado' THEN
-        notification_type := 'part_approval';
-        notification_message := format('Repuesto aprobado: %s (%s)', part_name, p_quantity);
-        notification_details := jsonb_build_object(
-            'order_id', p_order_id,
-            'part_id', p_part_id,
-            'quantity', p_quantity,
-            'price', p_price,
-            'authorized_by', p_authorized_by
-        );
-        INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
-        VALUES (p_order_id, p_authorized_by, technician_id, notification_message, notification_type, 'Pendiente', notification_details, CURRENT_TIMESTAMP);
+        -- Buscar la notificación part_request existente
+        SELECT * INTO existing_notification
+        FROM notifications
+        WHERE order_id = p_order_id
+          AND type = 'part_request'
+          AND (details->>'part_id')::text = p_part_id::text
+          AND status = 'Pendiente'
+        LIMIT 1;
+
+        IF FOUND THEN
+            -- Actualizar la notificación existente a part_approval
+            notification_type := 'part_approval';
+            notification_message := format('Repuesto aprobado: %s (%s)', part_name, p_quantity);
+            notification_details := jsonb_build_object(
+                'order_id', p_order_id,
+                'part_id', p_part_id,
+                'quantity', p_quantity,
+                'price', p_price,
+                'authorized_by', p_authorized_by
+            );
+            UPDATE notifications
+            SET
+                type = notification_type,
+                message = notification_message,
+                from_user_id = p_authorized_by,
+                to_user_id = technician_id,
+                status = 'Pendiente',
+                details = notification_details,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = existing_notification.id;
+            -- Descontar order_parts.quantity de parts.quantity y parts.quantity_reserved
+            UPDATE parts
+            SET quantity = quantity - p_quantity,
+                quantity_reserved = quantity_reserved - p_quantity
+            WHERE id = p_part_id;
+        END IF;
 
     ELSIF p_status = 'Rechazado' THEN
         IF p_note IS NULL THEN
             RAISE EXCEPTION 'El motivo de rechazo es obligatorio';
         END IF;
-        notification_type := 'part_rejection';
-        notification_message := format('Repuesto rechazado: %s (%s)', part_name, p_quantity);
-        notification_details := jsonb_build_object(
-            'order_id', p_order_id,
-            'part_id', p_part_id,
-            'quantity', p_quantity,
-            'reason', p_note
-        );
-        INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
-        VALUES (p_order_id, p_authorized_by, technician_id, notification_message, notification_type, 'Pendiente', notification_details, CURRENT_TIMESTAMP);
-    END IF;
-END;
-$$;
+        -- Buscar la notificación part_request existente
+        SELECT * INTO existing_notification
+        FROM notifications
+        WHERE order_id = p_order_id
+          AND type = 'part_request'
+          AND (details->>'part_id')::text = p_part_id::text
+          AND status = 'Pendiente'
+        LIMIT 1;
 
-CREATE FUNCTION public.notify_order_status_changes() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-    admin_id VARCHAR(10);
-    secretary_id VARCHAR(10);
-    notification_type VARCHAR(20);
-    notification_message TEXT;
-    details JSONB;
-BEGIN
-    SELECT id INTO admin_id FROM users WHERE role = 'admin' LIMIT 1;
-    SELECT id INTO secretary_id FROM users WHERE role = 'secretary' LIMIT 1;
-
-    IF NEW.status = 'Pendiente' AND OLD.status != 'Pendiente' THEN
-        notification_type := 'closure_request';
-        notification_message := format('Orden #%s enviada para aprobación', NEW.id);
-        details := jsonb_build_object('order_id', NEW.id);
-        INSERT INTO notifications (
-            order_id, from_user_id, to_user_id, message, type, status, details, created_at
-        )
-        VALUES (
-            NEW.id, NEW.technician_id, admin_id, notification_message, notification_type, 'Pendiente', details, CURRENT_TIMESTAMP
-        );
-    ELSIF NEW.status = 'Pendiente de Facturación' AND OLD.status != 'Pendiente de Facturación' THEN
-        notification_type := 'invoice_complete';
-        notification_message := format('Orden #%s lista para facturación', NEW.id);
-        details := jsonb_build_object('order_id', NEW.id);
-        INSERT INTO notifications (
-            order_id, from_user_id, to_user_id, message, type, status, details, created_at
-        )
-        VALUES (
-            NEW.id, admin_id, secretary_id, notification_message, notification_type, 'Pendiente', details, CURRENT_TIMESTAMP
-        );
+        IF FOUND THEN
+            -- Actualizar la notificación existente a part_rejection
+            notification_type := 'part_rejection';
+            notification_message := format('Repuesto rechazado: %s (%s)', part_name, p_quantity);
+            notification_details := jsonb_build_object(
+                'order_id', p_order_id,
+                'part_id', p_part_id,
+                'quantity', p_quantity,
+                'reason', p_note
+            );
+            UPDATE notifications
+            SET
+                type = notification_type,
+                message = notification_message,
+                from_user_id = p_authorized_by,
+                to_user_id = technician_id,
+                status = 'Pendiente',
+                details = notification_details,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = existing_notification.id;
+            -- Liberar order_parts.quantity de parts.quantity_reserved
+            UPDATE parts
+            SET quantity_reserved = GREATEST(quantity_reserved - p_quantity, 0)
+            WHERE id = p_part_id;
+        END IF;
     END IF;
-    RETURN NEW;
 END;
 $$;
 
@@ -283,7 +332,7 @@ BEGIN
 END;
 $$;
 
--- Crear función para el trigger
+-- Función para el trigger de inserción en order_parts
 CREATE OR REPLACE FUNCTION public.notify_order_part_insert()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -294,9 +343,193 @@ BEGIN
             NEW.quantity,
             NEW.status,
             NEW.price,
-            NULL, -- note (no se usa para Solicitado)
+            NULL,
             NEW.requested_by,
-            NULL  -- authorized_by (no se usa para Solicitado)
+            NULL
+        );
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Función para el trigger de actualización en order_parts
+CREATE OR REPLACE FUNCTION public.notify_order_part_update()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.status IN ('Aprobado', 'Rechazado') AND OLD.status != NEW.status THEN
+        PERFORM create_order_part_notification(
+            NEW.order_id,
+            NEW.part_id,
+            NEW.quantity,
+            NEW.status,
+            NEW.price,
+            NEW.note,
+            NEW.requested_by,
+            NEW.authorized_by
+        );
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Nueva función para manejar notificaciones de cierre de órdenes
+CREATE OR REPLACE FUNCTION public.create_order_closure_notification(
+    p_order_id character varying,
+    p_status character varying,
+    p_note text,
+    p_authorized_by character varying
+) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    admin_id VARCHAR(10);
+    technician_id VARCHAR(10);
+    notification_type VARCHAR(20);
+    notification_message TEXT;
+    notification_details JSONB;
+    existing_notification RECORD;
+BEGIN
+    -- Obtener el ID del técnico de la orden
+    SELECT o.technician_id INTO technician_id FROM orders o WHERE o.id = p_order_id;
+    -- Determinar el ID del administrador
+    IF p_authorized_by IS NOT NULL THEN
+        admin_id := p_authorized_by;
+    ELSE
+        SELECT id INTO admin_id FROM users WHERE role = 'admin' LIMIT 1;
+    END IF;
+
+    IF p_status = 'Pendiente' THEN
+        -- Verificar si ya existe una notificación closure_request pendiente
+        SELECT * INTO existing_notification
+        FROM notifications
+        WHERE order_id = p_order_id
+          AND type = 'closure_request'
+          AND status = 'Pendiente'
+        LIMIT 1;
+
+        IF NOT FOUND THEN
+            -- Crear nueva notificación para closure_request
+            notification_type := 'closure_request';
+            notification_message := format('Solicitud de cierre para orden #%s', p_order_id);
+            notification_details := jsonb_build_object('order_id', p_order_id);
+            INSERT INTO notifications (
+                order_id,
+                from_user_id,
+                to_user_id,
+                message,
+                type,
+                status,
+                details,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                p_order_id,
+                technician_id,
+                admin_id,
+                notification_message,
+                notification_type,
+                'Pendiente',
+                notification_details,
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
+            );
+        END IF;
+
+    ELSIF p_status = 'Finalizado' THEN
+        -- Buscar la notificación closure_request existente
+        SELECT * INTO existing_notification
+        FROM notifications
+        WHERE order_id = p_order_id
+          AND type = 'closure_request'
+          AND status = 'Pendiente'
+        LIMIT 1;
+
+        IF FOUND THEN
+            -- Actualizar la notificación existente a closure_approval
+            notification_type := 'closure_approval';
+            notification_message := format('Cierre aprobado para orden #%s', p_order_id);
+            notification_details := jsonb_build_object(
+                'order_id', p_order_id,
+                'authorized_by', p_authorized_by
+            );
+            UPDATE notifications
+            SET
+                type = notification_type,
+                message = notification_message,
+                from_user_id = p_authorized_by,
+                to_user_id = technician_id,
+                status = 'Pendiente',
+                details = notification_details,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = existing_notification.id;
+        END IF;
+
+    ELSIF p_status = 'Rechazado' THEN
+        IF p_note IS NULL THEN
+            RAISE EXCEPTION 'El motivo de rechazo es obligatorio';
+        END IF;
+        -- Buscar la notificación closure_request existente
+        SELECT * INTO existing_notification
+        FROM notifications
+        WHERE order_id = p_order_id
+          AND type = 'closure_request'
+          AND status = 'Pendiente'
+        LIMIT 1;
+
+        IF FOUND THEN
+            -- Actualizar la notificación existente a closure_rejection
+            notification_type := 'closure_rejection';
+            notification_message := format('Cierre rechazado para orden #%s', p_order_id);
+            notification_details := jsonb_build_object(
+                'order_id', p_order_id,
+                'reason', p_note
+            );
+            UPDATE notifications
+            SET
+                type = notification_type,
+                message = notification_message,
+                from_user_id = p_authorized_by,
+                to_user_id = technician_id,
+                status = 'Pendiente',
+                details = notification_details,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = existing_notification.id;
+        END IF;
+    END IF;
+END;
+$$;
+
+-- Actualizar la función notify_order_status_changes para usar create_order_closure_notification
+CREATE OR REPLACE FUNCTION public.notify_order_status_changes()
+RETURNS TRIGGER AS $$
+DECLARE
+    admin_id VARCHAR(10);
+    secretary_id VARCHAR(10);
+BEGIN
+    SELECT id INTO admin_id FROM users WHERE role = 'admin' LIMIT 1;
+    SELECT id INTO secretary_id FROM users WHERE role = 'secretary' LIMIT 1;
+
+    IF NEW.status = 'Pendiente' AND OLD.status != 'Pendiente' THEN
+        PERFORM create_order_closure_notification(
+            NEW.id,
+            NEW.status,
+            NULL,
+            NULL
+        );
+    ELSIF NEW.status = 'Pendiente de Facturación' AND OLD.status != 'Pendiente de Facturación' THEN
+        INSERT INTO notifications (
+            order_id, from_user_id, to_user_id, message, type, status, details, created_at
+        )
+        VALUES (
+            NEW.id,
+            admin_id,
+            secretary_id,
+            format('Orden #%s lista para facturación', NEW.id),
+            'invoice_complete',
+            'Pendiente',
+            jsonb_build_object('order_id', NEW.id),
+            CURRENT_TIMESTAMP
         );
     END IF;
     RETURN NEW;
@@ -362,9 +595,12 @@ CREATE INDEX idx_parts_id ON public.parts USING btree (id);
 CREATE INDEX idx_parts_quantity ON public.parts USING btree (id, quantity, quantity_reserved);
 
 -- Creating triggers
+DROP TRIGGER IF EXISTS order_parts_notification_trigger ON public.order_parts;
+DROP TRIGGER IF EXISTS order_parts_update_notification_trigger ON public.order_parts;
 CREATE TRIGGER check_single_admin_secretary BEFORE INSERT OR UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.restrict_single_admin_secretary();
-CREATE TRIGGER order_status_notification_trigger AFTER UPDATE OF status ON public.orders FOR EACH ROW WHEN (old.status IS DISTINCT FROM new.status) EXECUTE FUNCTION public.notify_order_status_changes();
 CREATE TRIGGER order_parts_notification_trigger AFTER INSERT ON public.order_parts FOR EACH ROW EXECUTE FUNCTION public.notify_order_part_insert();
+CREATE TRIGGER order_parts_update_notification_trigger AFTER UPDATE OF status ON public.order_parts FOR EACH ROW EXECUTE FUNCTION public.notify_order_part_update();
+CREATE TRIGGER order_status_notification_trigger AFTER UPDATE OF status ON public.orders FOR EACH ROW WHEN (OLD.status IS DISTINCT FROM NEW.status) EXECUTE FUNCTION public.notify_order_status_changes();
 
 -- Setting sequence values
 SELECT pg_catalog.setval('public.invoices_id_seq', 13, true);
