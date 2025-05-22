@@ -388,6 +388,7 @@ const updateOrder = async (id, orderData) => {
     parts,
     vehicle_economic_number,
     status,
+    finalized_at, // Nuevo campo
   } = orderData;
 
   const client = await pool.connect();
@@ -442,6 +443,11 @@ const updateOrder = async (id, orderData) => {
       values.push(status);
       paramIndex++;
     }
+    if (finalized_at !== undefined) {
+      updates.push(`finalized_at = $${paramIndex}`);
+      values.push(finalized_at);
+      paramIndex++;
+    }
 
     updates.push(`updated_at = CURRENT_TIMESTAMP`);
 
@@ -463,8 +469,6 @@ const updateOrder = async (id, orderData) => {
           "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2",
           [id, part.part_id]
         );
-        // Liberar quantity_reserved
-
         await client.query(
           "UPDATE parts SET quantity_reserved = quantity_reserved - $1 WHERE id = $2",
           [part.quantity, part.part_id]
@@ -688,6 +692,48 @@ const updateOrderStatus = async (id, status) => {
       throw { status: 404, message: "Orden no encontrada" };
     }
     console.log("[ORDER_SERVICE] Orden encontrada:", orderResult.rows[0]);
+
+    if (status === "Pendiente") {
+      // Eliminar repuestos en estado Rechazado
+      const rejectedPartsResult = await client.query(
+        "SELECT part_id FROM order_parts WHERE order_id = $1 AND status = 'Rechazado'",
+        [id]
+      );
+      for (const part of rejectedPartsResult.rows) {
+        // Eliminar el repuesto rechazado
+        await client.query(
+          "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2",
+          [id, part.part_id]
+        );
+        // Eliminar notificaciones asociadas (part_request y part_rejection)
+        await client.query(
+          `
+          DELETE FROM notifications
+          WHERE order_id = $1
+            AND (details->>'part_id')::text = $2
+            AND type IN ('part_request', 'part_rejection')
+        `,
+          [id, part.part_id]
+        );
+        console.log(
+          `[ORDER_SERVICE] Repuesto rechazado eliminado y notificaciones asociadas borradas: order_id=${id}, part_id=${part.part_id}`
+        );
+      }
+
+      // Registrar en order_history
+      await client.query(
+        `
+        INSERT INTO order_history (order_id, description, status, date)
+        VALUES ($1, $2, $3, $4)
+      `,
+        [
+          id,
+          "Solicitud de cierre enviada. Repuestos rechazados eliminados.",
+          status,
+          new Date(),
+        ]
+      );
+    }
 
     const query = `
       UPDATE orders
@@ -914,7 +960,6 @@ const requestPart = async (orderId, part) => {
     const availableQuantity =
       partData.rows[0].quantity - partData.rows[0].quantity_reserved;
 
-    // Validar inventario disponible
     if (part.quantity > availableQuantity) {
       throw {
         status: 400,
@@ -922,7 +967,6 @@ const requestPart = async (orderId, part) => {
       };
     }
 
-    // Insertar el repuesto en order_parts
     const partQuery = `
       INSERT INTO order_parts (
         order_id, part_id, quantity, price, status, requested_by, authorized_by
@@ -997,7 +1041,6 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
         "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2 RETURNING *",
         [orderId, partId]
       );
-      // Liberar quantity_reserved
       if (partResult.rows[0].status !== "Rechazado") {
         await client.query(
           "UPDATE parts SET quantity_reserved = quantity_reserved - $1 WHERE id = $2",
@@ -1010,7 +1053,6 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
         client
       );
     } else {
-      // Validar inventario
       if (quantity > availableQuantity) {
         throw {
           status: 400,
@@ -1022,7 +1064,6 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
         "UPDATE order_parts SET quantity = $1, price = $2 WHERE order_id = $3 AND part_id = $4 RETURNING *",
         [quantity, partPrice, orderId, partId]
       );
-      // Ajustar quantity_reserved
       const quantityDiff = quantity - currentQuantity;
       if (quantityDiff !== 0) {
         await client.query(
@@ -1182,7 +1223,6 @@ const approvePartReturn = async (orderId, partId, status, authorizedBy) => {
 
     let result;
     if (status === "Devolución Aprobada") {
-      // Eliminar el registro de order_parts
       result = await client.query(
         `
         DELETE FROM order_parts
@@ -1192,7 +1232,6 @@ const approvePartReturn = async (orderId, partId, status, authorizedBy) => {
         [orderId, partId]
       );
 
-      // Restaurar quantity y liberar quantity_reserved
       await client.query(
         `
         UPDATE parts
@@ -1203,7 +1242,6 @@ const approvePartReturn = async (orderId, partId, status, authorizedBy) => {
         [quantity, partId]
       );
     } else if (status === "Devolución Rechazada") {
-      // Actualizar el estado
       result = await client.query(
         `
         UPDATE order_parts

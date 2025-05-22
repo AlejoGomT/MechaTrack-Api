@@ -398,9 +398,10 @@ const finalizeOrder = async (req, res) => {
         .json({ message: "La orden no está en estado Pendiente" });
     }
 
-    // Actualizar la orden
+    // Preparar datos para actualización
     const orderData = {
       status,
+      finalized_at: action === "accept" ? new Date() : null, // Actualizar finalized_at si es accept
     };
     const updatedOrder = await orderService.updateOrder(id, orderData);
 
