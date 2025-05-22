@@ -957,12 +957,6 @@ const requestPart = async (orderId, part) => {
     ];
     const partResult = await client.query(partQuery, partValues);
 
-    // Actualizar quantity_reserved
-    await client.query(
-      "UPDATE parts SET quantity_reserved = quantity_reserved + $1 WHERE id = $2",
-      [part.quantity, part.part_id]
-    );
-
     await client.query("COMMIT");
     return partResult.rows[0];
   } catch (err) {
@@ -990,7 +984,10 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
     if (!partResult.rows.length) {
       throw { status: 404, message: "Repuesto no encontrado en la orden" };
     }
-    if (partResult.rows[0].status !== "Solicitado") {
+    if (
+      partResult.rows[0].status !== "Solicitado" &&
+      partResult.rows[0].status !== "Rechazado"
+    ) {
       throw {
         status: 400,
         message: "Solo se pueden editar repuestos en estado Solicitado",
@@ -1017,10 +1014,12 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
         [orderId, partId]
       );
       // Liberar quantity_reserved
-      await client.query(
-        "UPDATE parts SET quantity_reserved = quantity_reserved - $1 WHERE id = $2",
-        [currentQuantity, partId]
-      );
+      if (partResult.rows[0].status !== "Rechazado") {
+        await client.query(
+          "UPDATE parts SET quantity_reserved = quantity_reserved - $1 WHERE id = $2",
+          [currentQuantity, partId]
+        );
+      }
       await notificationService.deletePartRequestNotification(
         orderId,
         partId,

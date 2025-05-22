@@ -316,7 +316,7 @@ const deletePartRequestNotification = async (
     const query = `
       DELETE FROM notifications
       WHERE order_id = $1
-      AND type = 'part_request'
+      AND (type = 'part_request' OR type = 'part_rejection')
       AND details->>'part_id' = $2
       RETURNING *
     `;

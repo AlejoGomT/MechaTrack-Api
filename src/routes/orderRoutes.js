@@ -97,9 +97,6 @@ router.put(
       if (status && !validStatuses.includes(status)) {
         return res.status(400).json({ message: "Estado de repuesto inválido" });
       }
-      if (!quantity || quantity < 0) {
-        return res.status(400).json({ message: "Cantidad inválida" });
-      }
 
       // Obtener el repuesto actual
       const partCheck = await orderService.getOrderById(id);
@@ -112,7 +109,10 @@ router.put(
       if (
         userRole === "technician" &&
         part.status !== "Solicitado" &&
-        (!status || status !== "Solicitado")
+        part.status !==
+          "Rechazado"(
+            !status || status !== ("Solicitado" && status !== "Rechazado")
+          )
       ) {
         return res.status(403).json({
           message: "Solo se pueden editar repuestos en estado Solicitado",
