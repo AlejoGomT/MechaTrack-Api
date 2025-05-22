@@ -464,6 +464,7 @@ const updateOrder = async (id, orderData) => {
           [id, part.part_id]
         );
         // Liberar quantity_reserved
+
         await client.query(
           "UPDATE parts SET quantity_reserved = quantity_reserved - $1 WHERE id = $2",
           [part.quantity, part.part_id]
@@ -720,23 +721,6 @@ const updateOrderStatus = async (id, status) => {
       console.log(
         "[ORDER_SERVICE] Creando notificación para adminId:",
         adminId
-      );
-
-      await notificationService.createNotification(
-        {
-          order_id: id,
-          from_user_id: orderResult.rows[0].technician_id,
-          to_user_id: adminId,
-          message: `Orden #${id} enviada para aprobación`,
-          type: "closure_approval",
-          status: "Pendiente",
-        },
-        client
-      );
-
-      console.log(
-        "[ORDER_SERVICE] Notificación creada para estado Pendiente en orden:",
-        id
       );
     }
 

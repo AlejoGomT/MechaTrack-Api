@@ -109,10 +109,8 @@ router.put(
       if (
         userRole === "technician" &&
         part.status !== "Solicitado" &&
-        part.status !==
-          "Rechazado"(
-            !status || status !== ("Solicitado" && status !== "Rechazado")
-          )
+        part.status !== "Rechazado" &&
+        (!status || (status !== "Solicitado" && status !== "Rechazado"))
       ) {
         return res.status(403).json({
           message: "Solo se pueden editar repuestos en estado Solicitado",
@@ -230,7 +228,7 @@ router.put(
               };
               io.to(`order_${id}`).emit("notification", socketNotification);
               if (notificationResult.rows[0].to_user_id) {
-                io.to(notificationResult.rows[0].to_user_id).emit(
+                io.to(`user_${notificationResult.rows[0].to_user_id}`).emit(
                   "notification",
                   socketNotification
                 );
@@ -379,6 +377,12 @@ router.delete(
   authenticateToken,
   restrictTo("admin", "technician"),
   orderController.deleteOrderImage
+);
+router.put(
+  "/:id/finalize",
+  authenticateToken,
+  restrictTo("admin"),
+  orderController.finalizeOrder
 );
 
 module.exports = router;

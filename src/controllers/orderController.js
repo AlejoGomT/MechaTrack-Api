@@ -373,16 +373,38 @@ const finalizeOrder = async (req, res) => {
       note,
       status,
     });
+
+    // Validar parámetros
     if (!["accept", "reject"].includes(action)) {
       return res.status(400).json({ message: "Acción inválida" });
     }
+    if (action === "reject" && !note) {
+      return res
+        .status(400)
+        .json({ message: "El motivo de rechazo es obligatorio" });
+    }
+    if (!status || !["Finalizado", "En Proceso"].includes(status)) {
+      return res.status(400).json({ message: "Estado inválido" });
+    }
 
+    // Obtener la orden actual
+    const order = await orderService.getOrderById(id);
+    if (!order) {
+      return res.status(404).json({ message: "Orden no encontrada" });
+    }
+    if (order.status !== "Pendiente") {
+      return res
+        .status(400)
+        .json({ message: "La orden no está en estado Pendiente" });
+    }
+
+    // Actualizar la orden
     const orderData = {
-      status: status || (action === "accept" ? "Finalizado" : "En Proceso"),
+      status,
     };
-
     const updatedOrder = await orderService.updateOrder(id, orderData);
 
+    // Registrar en el historial
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -408,21 +430,105 @@ const finalizeOrder = async (req, res) => {
       client.release();
     }
 
-    if (action === "reject") {
-      const orderResult = await pool.query(
-        "SELECT technician_id FROM orders WHERE id = $1",
-        [id]
+    // Buscar notificación existente
+    const orderResult = await pool.query(
+      "SELECT technician_id FROM orders WHERE id = $1",
+      [id]
+    );
+    if (!orderResult.rows.length) {
+      throw new Error("Técnico no encontrado para la orden");
+    }
+    const technicianId = orderResult.rows[0].technician_id;
+
+    const notificationResult = await pool.query(
+      `
+      SELECT * FROM notifications
+      WHERE order_id = $1 AND type = 'closure_request'
+      ORDER BY updated_at DESC LIMIT 1
+    `,
+      [id]
+    );
+
+    let notification;
+    if (notificationResult.rows.length) {
+      // Actualizar notificación existente
+      const notificationData = {
+        message:
+          action === "accept"
+            ? `Orden #${id} aprobada`
+            : `Orden #${id} rechazada: ${note || "Sin motivo"}`,
+        type: action === "accept" ? "closure_approval" : "closure_rejection",
+        status: "Pendiente",
+        from_user_id: req.user.id,
+        to_user_id: technicianId,
+        updated_at: new Date(),
+      };
+
+      const updateQuery = `
+        UPDATE notifications
+        SET message = $1, type = $2, status = $3, from_user_id = $4, to_user_id = $5, updated_at = $6
+        WHERE id = $7
+        RETURNING *
+      `;
+      const updateResult = await pool.query(updateQuery, [
+        notificationData.message,
+        notificationData.type,
+        notificationData.status,
+        notificationData.from_user_id,
+        notificationData.to_user_id,
+        notificationData.updated_at,
+        notificationResult.rows[0].id,
+      ]);
+
+      notification = updateResult.rows[0];
+    } else {
+      // Si no existe notificación, crear una (caso de fallback)
+      console.warn(
+        `[orderController] No se encontró notificación closure_request para order_id: ${id}. Creando una nueva.`
       );
-      if (orderResult.rows.length) {
-        const technicianId = orderResult.rows[0].technician_id;
-        await notificationService.createNotification({
-          order_id: id,
-          from_user_id: req.user.id,
-          to_user_id: technicianId,
-          message: `Orden #${id} rechazada: ${note || "Sin motivo"}`,
-          type: "closure_rejection",
-          status: "Pendiente",
-        });
+      const notificationData = {
+        order_id: id,
+        from_user_id: req.user.id,
+        to_user_id: technicianId,
+        message:
+          action === "accept"
+            ? `Orden #${id} aprobada`
+            : `Orden #${id} rechazada: ${note || "Sin motivo"}`,
+        type: action === "accept" ? "closure_approval" : "closure_rejection",
+        status: "Pendiente",
+      };
+      notification = await notificationService.createNotification(
+        notificationData
+      );
+    }
+
+    if (notification) {
+      const io = req.app.get("io");
+      if (io) {
+        const socketNotification = {
+          id: notification.id,
+          orderId: notification.order_id,
+          fromUserId: notification.from_user_id,
+          toUserId: notification.to_user_id,
+          message: notification.message,
+          type: notification.type,
+          status: notification.status,
+          details: notification.details || {},
+          timestamp: notification.updated_at,
+        };
+        io.to(`order_${id}`).emit("notification", socketNotification);
+        io.to(`user_${notification.to_user_id}`).emit(
+          "notification",
+          socketNotification
+        );
+        console.log(
+          "[orderController] Notificación emitida para order_",
+          id,
+          ":",
+          socketNotification
+        );
+      } else {
+        console.error("[orderController] Instancia io no disponible");
       }
     }
 
