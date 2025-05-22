@@ -398,17 +398,56 @@ const finalizeOrder = async (req, res) => {
         .json({ message: "La orden no está en estado Pendiente" });
     }
 
-    // Preparar datos para actualización
-    const orderData = {
-      status,
-      finalized_at: action === "accept" ? new Date() : null, // Actualizar finalized_at si es accept
-    };
-    const updatedOrder = await orderService.updateOrder(id, orderData);
+    // Validar repuestos pendientes si la acción es aceptar
+    if (action === "accept") {
+      const pendingParts = order.parts.filter(
+        (part) => part.status === "Solicitado"
+      );
+      if (pendingParts.length > 0) {
+        return res.status(400).json({
+          message:
+            "No se puede aceptar la orden con repuestos pendientes por aprovacion",
+          pendingParts,
+        });
+      }
+    }
 
-    // Registrar en el historial
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
+
+      // Si la orden es aceptada, eliminar repuestos rechazados
+      if (action === "accept") {
+        const rejectedPartsResult = await client.query(
+          "SELECT part_id FROM order_parts WHERE order_id = $1 AND status = 'Rechazado'",
+          [id]
+        );
+        for (const part of rejectedPartsResult.rows) {
+          // Eliminar el repuesto rechazado
+          await client.query(
+            "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2",
+            [id, part.part_id]
+          );
+          // Eliminar notificaciones asociadas
+          await notificationService.deletePartRequestNotification(
+            id,
+            part.part_id,
+            client
+          );
+          console.log(
+            `[orderController] Repuesto rechazado eliminado y notificaciones asociadas borradas: order_id=${id}, part_id=${part.part_id}`
+          );
+        }
+      }
+
+      // Preparar datos para actualización
+      const orderData = {
+        status,
+        finalized_at: action === "accept" ? new Date() : null,
+      };
+      const updatedOrder = await orderService.updateOrder(id, orderData);
+
+      // Registrar en el historial
       await client.query(
         `
         INSERT INTO order_history (order_id, description, status, date)
@@ -423,118 +462,120 @@ const finalizeOrder = async (req, res) => {
           new Date(),
         ]
       );
+
+      // Buscar notificación existente
+      const orderResult = await client.query(
+        "SELECT technician_id FROM orders WHERE id = $1",
+        [id]
+      );
+      if (!orderResult.rows.length) {
+        throw new Error("Técnico no encontrado para la orden");
+      }
+      const technicianId = orderResult.rows[0].technician_id;
+
+      const notificationResult = await client.query(
+        `
+        SELECT * FROM notifications
+        WHERE order_id = $1 AND type = 'closure_request'
+        ORDER BY updated_at DESC LIMIT 1
+      `,
+        [id]
+      );
+
+      let notification;
+      if (notificationResult.rows.length) {
+        // Actualizar notificación existente
+        const notificationData = {
+          message:
+            action === "accept"
+              ? `Orden #${id} aprobada`
+              : `Orden #${id} rechazada: ${note || "Sin motivo"}`,
+          type: action === "accept" ? "closure_approval" : "closure_rejection",
+          status: "Pendiente",
+          from_user_id: req.user.id,
+          to_user_id: technicianId,
+          updated_at: new Date(),
+        };
+
+        const updateQuery = `
+          UPDATE notifications
+          SET message = $1, type = $2, status = $3, from_user_id = $4, to_user_id = $5, updated_at = $6
+          WHERE id = $7
+          RETURNING *
+        `;
+        const updateResult = await client.query(updateQuery, [
+          notificationData.message,
+          notificationData.type,
+          notificationData.status,
+          notificationData.from_user_id,
+          notificationData.to_user_id,
+          notificationData.updated_at,
+          notificationResult.rows[0].id,
+        ]);
+
+        notification = updateResult.rows[0];
+      } else {
+        // Crear nueva notificación si no existe
+        console.warn(
+          `[orderController] No se encontró notificación closure_request para order_id: ${id}. Creando una nueva.`
+        );
+        const notificationData = {
+          order_id: id,
+          from_user_id: req.user.id,
+          to_user_id: technicianId,
+          message:
+            action === "accept"
+              ? `Orden #${id} aprobada`
+              : `Orden #${id} rechazada: ${note || "Sin motivo"}`,
+          type: action === "accept" ? "closure_approval" : "closure_rejection",
+          status: "Pendiente",
+        };
+        notification = await notificationService.createNotification(
+          notificationData,
+          client
+        );
+      }
+
+      // Emitir notificación por Socket.IO
+      if (notification) {
+        const io = req.app.get("io");
+        if (io) {
+          const socketNotification = {
+            id: notification.id,
+            orderId: notification.order_id,
+            fromUserId: notification.from_user_id,
+            toUserId: notification.to_user_id,
+            message: notification.message,
+            type: notification.type,
+            status: notification.status,
+            details: notification.details || {},
+            timestamp: notification.updated_at,
+          };
+          io.to(`order_${id}`).emit("notification", socketNotification);
+          io.to(`user_${notification.to_user_id}`).emit(
+            "notification",
+            socketNotification
+          );
+          console.log(
+            "[orderController] Notificación emitida para order_",
+            id,
+            ":",
+            socketNotification
+          );
+        } else {
+          console.error("[orderController] Instancia io no disponible");
+        }
+      }
+
       await client.query("COMMIT");
+      console.log(`[orderController] Orden finalizada:`, updatedOrder);
+      res.json(updatedOrder);
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
     } finally {
       client.release();
     }
-
-    // Buscar notificación existente
-    const orderResult = await pool.query(
-      "SELECT technician_id FROM orders WHERE id = $1",
-      [id]
-    );
-    if (!orderResult.rows.length) {
-      throw new Error("Técnico no encontrado para la orden");
-    }
-    const technicianId = orderResult.rows[0].technician_id;
-
-    const notificationResult = await pool.query(
-      `
-      SELECT * FROM notifications
-      WHERE order_id = $1 AND type = 'closure_request'
-      ORDER BY updated_at DESC LIMIT 1
-    `,
-      [id]
-    );
-
-    let notification;
-    if (notificationResult.rows.length) {
-      // Actualizar notificación existente
-      const notificationData = {
-        message:
-          action === "accept"
-            ? `Orden #${id} aprobada`
-            : `Orden #${id} rechazada: ${note || "Sin motivo"}`,
-        type: action === "accept" ? "closure_approval" : "closure_rejection",
-        status: "Pendiente",
-        from_user_id: req.user.id,
-        to_user_id: technicianId,
-        updated_at: new Date(),
-      };
-
-      const updateQuery = `
-        UPDATE notifications
-        SET message = $1, type = $2, status = $3, from_user_id = $4, to_user_id = $5, updated_at = $6
-        WHERE id = $7
-        RETURNING *
-      `;
-      const updateResult = await pool.query(updateQuery, [
-        notificationData.message,
-        notificationData.type,
-        notificationData.status,
-        notificationData.from_user_id,
-        notificationData.to_user_id,
-        notificationData.updated_at,
-        notificationResult.rows[0].id,
-      ]);
-
-      notification = updateResult.rows[0];
-    } else {
-      // Si no existe notificación, crear una (caso de fallback)
-      console.warn(
-        `[orderController] No se encontró notificación closure_request para order_id: ${id}. Creando una nueva.`
-      );
-      const notificationData = {
-        order_id: id,
-        from_user_id: req.user.id,
-        to_user_id: technicianId,
-        message:
-          action === "accept"
-            ? `Orden #${id} aprobada`
-            : `Orden #${id} rechazada: ${note || "Sin motivo"}`,
-        type: action === "accept" ? "closure_approval" : "closure_rejection",
-        status: "Pendiente",
-      };
-      notification = await notificationService.createNotification(
-        notificationData
-      );
-    }
-
-    if (notification) {
-      const io = req.app.get("io");
-      if (io) {
-        const socketNotification = {
-          id: notification.id,
-          orderId: notification.order_id,
-          fromUserId: notification.from_user_id,
-          toUserId: notification.to_user_id,
-          message: notification.message,
-          type: notification.type,
-          status: notification.status,
-          details: notification.details || {},
-          timestamp: notification.updated_at,
-        };
-        io.to(`order_${id}`).emit("notification", socketNotification);
-        io.to(`user_${notification.to_user_id}`).emit(
-          "notification",
-          socketNotification
-        );
-        console.log(
-          "[orderController] Notificación emitida para order_",
-          id,
-          ":",
-          socketNotification
-        );
-      } else {
-        console.error("[orderController] Instancia io no disponible");
-      }
-    }
-
-    console.log(`[orderController] Orden finalizada:`, updatedOrder);
-    res.json(updatedOrder);
   } catch (error) {
     console.error("[orderController] Error al finalizar orden:", error);
     res.status(error.status || 500).json({

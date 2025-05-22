@@ -468,26 +468,49 @@ DECLARE
 BEGIN
     -- Obtener el ID del técnico de la orden
     SELECT o.technician_id INTO technician_id FROM orders o WHERE o.id = p_order_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Orden con ID % no encontrada', p_order_id;
+    END IF;
+
     -- Determinar el ID del administrador
     IF p_authorized_by IS NOT NULL THEN
         admin_id := p_authorized_by;
     ELSE
         SELECT id INTO admin_id FROM users WHERE role = 'admin' LIMIT 1;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'No se encontró un usuario con rol admin';
+        END IF;
     END IF;
 
     IF p_status = 'Pendiente' THEN
-        -- Verificar si ya existe una notificación closure_request pendiente
+        -- Buscar notificación existente de tipo closure_request, closure_approval o closure_rejection
         SELECT * INTO existing_notification
         FROM notifications
         WHERE order_id = p_order_id
-          AND type = 'closure_request'
-          AND status = 'Pendiente'
+          AND type IN ('closure_request', 'closure_approval', 'closure_rejection')
+        ORDER BY updated_at DESC
         LIMIT 1;
 
-        IF NOT FOUND THEN
+        IF FOUND THEN
+            -- Actualizar la notificación existente a closure_request
+            notification_type := 'closure_request';
+            notification_message := format('Orden #%s pendiente de aprobación', p_order_id);
+            notification_details := jsonb_build_object('order_id', p_order_id);
+            UPDATE notifications
+            SET
+                type = notification_type,
+                message = notification_message,
+                from_user_id = technician_id,
+                to_user_id = admin_id,
+                status = 'Pendiente',
+                details = notification_details,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = existing_notification.id;
+            RAISE NOTICE 'Notificación existente actualizada a closure_request para order_id: %, notification_id: %', p_order_id, existing_notification.id;
+        ELSE
             -- Crear nueva notificación para closure_request
             notification_type := 'closure_request';
-            notification_message := format('Solicitud de cierre para orden #%s', p_order_id);
+            notification_message := format('Orden #%s pendiente de aprobación', p_order_id);
             notification_details := jsonb_build_object('order_id', p_order_id);
             INSERT INTO notifications (
                 order_id,
@@ -511,6 +534,7 @@ BEGIN
                 CURRENT_TIMESTAMP,
                 CURRENT_TIMESTAMP
             );
+            RAISE NOTICE 'Nueva notificación closure_request creada para order_id: %', p_order_id;
         END IF;
 
     ELSIF p_status = 'Finalizado' THEN
@@ -540,6 +564,7 @@ BEGIN
                 details = notification_details,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = existing_notification.id;
+            RAISE NOTICE 'Notificación actualizada a closure_approval para order_id: %, notification_id: %', p_order_id, existing_notification.id;
         END IF;
 
     ELSIF p_status = 'Rechazado' THEN
@@ -557,7 +582,7 @@ BEGIN
         IF FOUND THEN
             -- Actualizar la notificación existente a closure_rejection
             notification_type := 'closure_rejection';
-            notification_message := format('Cierre rechazado para orden #%s', p_order_id);
+            notification_message := format('Cierre rechazado para orden #%s: %s', p_order_id, p_note);
             notification_details := jsonb_build_object(
                 'order_id', p_order_id,
                 'reason', p_note
@@ -572,6 +597,7 @@ BEGIN
                 details = notification_details,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = existing_notification.id;
+            RAISE NOTICE 'Notificación actualizada a closure_rejection para order_id: %, notification_id: %', p_order_id, existing_notification.id;
         END IF;
     END IF;
 END;

@@ -10,13 +10,14 @@ const notificationService = require("./services/notificationService");
 // Crear servidor HTTP
 const server = http.createServer(app);
 
-// Configurar Socket.IO
 const io = new Server(server, {
   cors: {
     origin: "http://localhost:5173",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    transports: ["websocket", "polling"],
     credentials: true,
   },
+  allowEIO3: true,
 });
 
 // Inicializar io en socket.js

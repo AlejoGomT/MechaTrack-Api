@@ -677,14 +677,16 @@ const updateOrder = async (id, orderData) => {
 const updateOrderStatus = async (id, status) => {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query("BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE");
     console.log(
-      "[ORDER_SERVICE] Transacción iniciada para updateOrderStatus:",
-      id
+      "[ORDER_SERVICE] Transacción iniciada para updateOrderStatus: id=%s, status=%s",
+      id,
+      status
     );
 
+    // Obtener la orden actual
     const orderResult = await client.query(
-      "SELECT * FROM orders WHERE id = $1",
+      "SELECT * FROM orders WHERE id = $1 FOR UPDATE",
       [id]
     );
     if (!orderResult.rows.length) {
@@ -692,7 +694,45 @@ const updateOrderStatus = async (id, status) => {
       throw { status: 404, message: "Orden no encontrada" };
     }
     console.log("[ORDER_SERVICE] Orden encontrada:", orderResult.rows[0]);
+    const order = orderResult.rows[0];
 
+    // Validar transición de estado
+    if (order.status === status) {
+      console.error(
+        `[ORDER_SERVICE] La orden ya está en estado ${status} para id:`,
+        id
+      );
+      throw { status: 400, message: `La orden ya está en estado ${status}` };
+    }
+    if (order.status === "Finalizado" && status !== "Finalizado") {
+      console.error(
+        "[ORDER_SERVICE] Intento de cambiar estado de orden finalizada para id:",
+        id
+      );
+      throw {
+        status: 400,
+        message: "No se puede cambiar una orden finalizada",
+      };
+    }
+
+    // Actualizar el estado de la orden
+    const query = `
+      UPDATE orders
+      SET status = $1, updated_at = $2
+      WHERE id = $3
+      RETURNING *
+    `;
+    const values = [status, new Date(), id];
+    console.log(
+      "[ORDER_SERVICE] Consulta SQL para updateOrderStatus:",
+      query,
+      values
+    );
+    const result = await client.query(query, values);
+    console.log("[ORDER_SERVICE] Orden actualizada:", result.rows[0]);
+    const updatedOrder = result.rows[0];
+
+    // Manejar notificaciones y repuestos si el estado es Pendiente
     if (status === "Pendiente") {
       // Eliminar repuestos en estado Rechazado
       const rejectedPartsResult = await client.query(
@@ -700,12 +740,10 @@ const updateOrderStatus = async (id, status) => {
         [id]
       );
       for (const part of rejectedPartsResult.rows) {
-        // Eliminar el repuesto rechazado
         await client.query(
           "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2",
           [id, part.part_id]
         );
-        // Eliminar notificaciones asociadas (part_request y part_rejection)
         await client.query(
           `
           DELETE FROM notifications
@@ -733,41 +771,67 @@ const updateOrderStatus = async (id, status) => {
           new Date(),
         ]
       );
-    }
 
-    const query = `
-      UPDATE orders
-      SET status = $1, updated_at = $2
-      WHERE id = $3
-      RETURNING *
-    `;
-    const values = [status, new Date(), id];
-    console.log(
-      "[ORDER_SERVICE] Consulta SQL para updateOrderStatus:",
-      query,
-      values
-    );
-    const result = await client.query(query, values);
-    console.log("[ORDER_SERVICE] Orden actualizada:", result.rows[0]);
-
-    if (status === "Pendiente") {
-      const adminResult = await client.query(
-        "SELECT id FROM users WHERE role = 'admin' LIMIT 1"
+      // Obtener la notificación creada o actualizada por el trigger
+      const notificationResult = await client.query(
+        `
+        SELECT * FROM notifications
+        WHERE order_id = $1 
+          AND type = 'closure_request'
+          AND status = 'Pendiente'
+        ORDER BY updated_at DESC LIMIT 1
+      `,
+        [id]
       );
-      if (!adminResult.rows.length) {
+      console.log(
+        `[ORDER_SERVICE] Notificación encontrada para order_id=${id}:`,
+        notificationResult.rows
+      );
+
+      let notification;
+      if (notificationResult.rows.length) {
+        notification = notificationResult.rows[0];
+        console.log(
+          `[ORDER_SERVICE] Notificación closure_request encontrada: id=${notification.id}`
+        );
+      } else {
         console.error(
-          "[ORDER_SERVICE] No se encontró un usuario administrador"
+          `[ORDER_SERVICE] No se encontró notificación closure_request para order_id=${id}`
         );
         throw {
           status: 500,
-          message: "No se encontró un usuario administrador",
+          message: "No se encontró notificación closure_request",
         };
       }
-      const adminId = adminResult.rows[0].id;
-      console.log(
-        "[ORDER_SERVICE] Creando notificación para adminId:",
-        adminId
-      );
+
+      // Emitir notificación por Socket.IO
+      const io = require("../socket").getIo();
+      if (io && typeof io.to === "function") {
+        const socketNotification = {
+          id: notification.id,
+          orderId: notification.order_id,
+          fromUserId: notification.from_user_id,
+          toUserId: notification.to_user_id,
+          message: notification.message,
+          type: notification.type,
+          status: notification.status,
+          details: notification.details || {},
+          timestamp: notification.updated_at.toISOString(),
+        };
+        io.to(`order_${id}`).emit("notification", socketNotification);
+        io.to(`user_${notification.to_user_id}`).emit(
+          "notification",
+          socketNotification
+        );
+        console.log(
+          `[ORDER_SERVICE] Notificación emitida para order_${id} y user_${notification.to_user_id}:`,
+          socketNotification
+        );
+      } else {
+        console.warn(
+          "[ORDER_SERVICE] Socket.IO no está disponible, no se emitieron notificaciones"
+        );
+      }
     }
 
     await client.query("COMMIT");

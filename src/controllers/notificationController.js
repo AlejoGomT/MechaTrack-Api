@@ -170,10 +170,7 @@ const getConversations = async (req, res) => {
       ORDER BY c.last_message_at DESC
     `;
     const result = await pool.query(query, [user_id]);
-    console.log(
-      "[notificationController] Conversaciones enviadas:",
-      result.rows
-    );
+
     res.json(result.rows);
   } catch (error) {
     console.error(
