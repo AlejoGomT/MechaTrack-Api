@@ -287,7 +287,7 @@ const requestPartReturn = async (req, res) => {
 
 const approvePartReturn = async (req, res) => {
   const { id, partId } = req.params;
-  const { status } = req.body;
+  const { status, note } = req.body;
   try {
     if (
       !status ||
@@ -295,11 +295,13 @@ const approvePartReturn = async (req, res) => {
     ) {
       return res.status(400).json({ message: "Estado de devolución inválido" });
     }
+
     const result = await orderService.approvePartReturn(
       id,
       partId,
       status,
-      req.user.id
+      req.user.id,
+      note
     );
     res.json({
       message:

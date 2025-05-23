@@ -320,8 +320,8 @@ BEGIN
         WHERE id = p_part_id;
 
     ELSIF p_status = 'Rechazado' THEN
-        IF p_note IS NULL THEN
-            RAISE EXCEPTION 'El motivo de rechazo es obligatorio';
+        IF p_note IS NULL OR LENGTH(TRIM(p_note)) < 5 THEN
+            RAISE EXCEPTION 'El motivo de rechazo es obligatorio y debe tener al menos 5 caracteres';
         END IF;
         SELECT * INTO existing_notification
         FROM notifications
@@ -337,7 +337,7 @@ BEGIN
             'order_id', p_order_id,
             'part_id', p_part_id,
             'quantity', p_quantity,
-            'reason', p_note
+            'note', p_note
         );
 
         IF FOUND THEN
@@ -387,13 +387,12 @@ BEGIN
         SELECT * INTO existing_notification
         FROM notifications
         WHERE order_id = p_order_id
-          AND type = 'part_approval'
+          AND type IN ('part_approval', 'part_return_request') 
           AND (details->>'part_id')::text = p_part_id::text
-          AND status = 'Pendiente'
         LIMIT 1;
 
         notification_type := 'part_return_request';
-        notification_message := format('Solicitud de devolución: %s (%s)', part_name, p_quantity);
+        notification_message := format('Solicitud de devolución de %s (%s) para la orden #%s', part_name, p_quantity, p_order_id);
         notification_details := jsonb_build_object(
             'order_id', p_order_id,
             'part_id', p_part_id,
@@ -413,7 +412,7 @@ BEGIN
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = existing_notification.id;
         ELSE
-            RAISE NOTICE 'Creando nueva notificación part_return para order_id: %, part_id: %', p_order_id, p_part_id;
+            RAISE NOTICE 'Creando nueva notificación part_return_request para order_id: %, part_id: %', p_order_id, p_part_id;
             INSERT INTO notifications (
                 order_id,
                 from_user_id,
@@ -444,11 +443,10 @@ BEGIN
         WHERE order_id = p_order_id
           AND type = 'part_return_request'
           AND (details->>'part_id')::text = p_part_id::text
-          AND status = 'Pendiente'
         LIMIT 1;
 
         notification_type := 'part_return_request';
-        notification_message := format('Devolución aprobada: %s (%s)', part_name, p_quantity);
+        notification_message := format('Devolución de %s (%s) aprobada para la orden #%s', part_name, p_quantity, p_order_id);
         notification_details := jsonb_build_object(
             'order_id', p_order_id,
             'part_id', p_part_id,
@@ -469,7 +467,7 @@ BEGIN
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = existing_notification.id;
         ELSE
-            RAISE NOTICE 'Creando nueva notificación part_return_status para order_id: %, part_id: %', p_order_id, p_part_id;
+            RAISE NOTICE 'Creando nueva notificación part_return_request para order_id: %, part_id: %', p_order_id, p_part_id;
             INSERT INTO notifications (
                 order_id,
                 from_user_id,
@@ -494,31 +492,27 @@ BEGIN
             );
         END IF;
 
-        RAISE NOTICE 'Reincorporando quantity para part_id: %', p_part_id;
-        UPDATE parts
-        SET quantity = quantity + p_quantity,
-            quantity_reserved = GREATEST(quantity_reserved - p_quantity, 0)
-        WHERE id = p_part_id;
-
     ELSIF p_status = 'Devolución Rechazada' THEN
-        IF p_note IS NULL THEN
-            RAISE EXCEPTION 'El motivo de rechazo es obligatorio';
-        END IF;
         SELECT * INTO existing_notification
         FROM notifications
         WHERE order_id = p_order_id
           AND type = 'part_return_request'
           AND (details->>'part_id')::text = p_part_id::text
-          AND status = 'Pendiente'
         LIMIT 1;
 
         notification_type := 'part_return_request';
-        notification_message := format('Devolución rechazada: %s (%s): %s', part_name, p_quantity, p_note);
+        notification_message := format(
+            'Devolución de %s (%s) rechazada para la orden #%s%s',
+            part_name,
+            p_quantity,
+            p_order_id,
+            CASE WHEN p_note IS NOT NULL AND TRIM(p_note) != '' THEN ': ' || p_note ELSE '' END
+        );
         notification_details := jsonb_build_object(
             'order_id', p_order_id,
             'part_id', p_part_id,
             'quantity', p_quantity,
-            'reason', p_note
+            'note', CASE WHEN p_note IS NOT NULL AND TRIM(p_note) != '' THEN p_note ELSE NULL END
         );
 
         IF FOUND THEN

@@ -283,30 +283,7 @@ router.post(
   "/:id/parts/:partId/approve-return",
   authenticateToken,
   restrictTo("admin"),
-  async (req, res) => {
-    try {
-      const { id, partId } = req.params;
-      const { status } = req.body;
-      const authorizedBy = req.user.id;
-
-      const result = await orderService.approvePartReturn(
-        id,
-        partId,
-        status,
-        authorizedBy
-      );
-      res.json({
-        message:
-          status === "Devolución Aprobada"
-            ? "Devolución aprobada y repuesto eliminado exitosamente"
-            : "Devolución rechazada exitosamente",
-        part: result,
-      });
-    } catch (err) {
-      console.error("[orderRoutes] Error al aprobar/rechazar devolución:", err);
-      res.status(err.status || 500).json({ message: err.message });
-    }
-  }
+  orderController.approvePartReturn
 );
 router.put(
   "/:id/status",

@@ -1047,6 +1047,11 @@ const requestPart = async (orderId, part) => {
       part.requested_by,
       part.authorized_by || null,
     ];
+
+    await client.query(
+      "UPDATE parts SET quantity_reserved = $1 WHERE id = $2",
+      [part.quantity, part.part_id]
+    );
     const partResult = await client.query(partQuery, partValues);
 
     await client.query("COMMIT");
@@ -1169,12 +1174,18 @@ const requestPartReturn = async (orderId, partId, quantity) => {
       [orderId, partId]
     );
     if (!partResult.rows.length) {
-      throw { status: 404, message: "Repuesto no encontrado en la orden" };
+      throw {
+        status: 404,
+        message: `Repuesto ${partId} no encontrado en la orden ${orderId}`,
+      };
     }
-    if (partResult.rows[0].status !== "Aprobado") {
+    if (
+      partResult.rows[0].status !== "Aprobado" &&
+      partResult.rows[0].status !== "Devolución Rechazada"
+    ) {
       throw {
         status: 400,
-        message: "Solo se pueden devolver repuestos en estado Aprobado",
+        message: `Solo se pueden devolver repuestos en estado Aprobado. Estado actual: ${partResult.rows[0].status}`,
       };
     }
 
@@ -1193,7 +1204,7 @@ const requestPartReturn = async (orderId, partId, quantity) => {
       [orderId]
     );
     if (!orderResult.rows.length) {
-      throw { status: 404, message: "Orden no encontrada" };
+      throw { status: 404, message: `Orden ${orderId} no encontrada` };
     }
     const technicianId = orderResult.rows[0].technician_id;
 
@@ -1210,39 +1221,44 @@ const requestPartReturn = async (orderId, partId, quantity) => {
       [partId]
     );
     if (!partData.rows.length) {
-      throw { status: 400, message: `Repuesto con ID ${partId} no encontrado` };
+      throw {
+        status: 400,
+        message: `Repuesto con ID ${partId} no encontrado en la tabla parts`,
+      };
     }
     const partName = partData.rows[0].name || "Repuesto desconocido";
-
-    await notificationService.createNotification(
-      {
-        order_id: orderId,
-        from_user_id: technicianId,
-        to_user_id: adminId,
-        message: `Solicitud de devolución: ${partName} (${quantity})`,
-        type: "part_return",
-        status: "Pendiente",
-      },
-      client
-    );
 
     await client.query("COMMIT");
     return { message: "Devolución solicitada exitosamente" };
   } catch (err) {
     await client.query("ROLLBACK");
+    console.error("[ORDER_SERVICE] Error en requestPartReturn:", {
+      error: err.message,
+      stack: err.stack,
+      orderId,
+      partId,
+      quantity,
+    });
     throw err.status
       ? err
       : {
           status: 500,
           message: "Error al solicitar devolución de repuesto",
           details: err.message,
+          stack: err.stack,
         };
   } finally {
     client.release();
   }
 };
 
-const approvePartReturn = async (orderId, partId, status, authorizedBy) => {
+const approvePartReturn = async (
+  orderId,
+  partId,
+  status,
+  authorizedBy,
+  note = null
+) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -1250,6 +1266,7 @@ const approvePartReturn = async (orderId, partId, status, authorizedBy) => {
       orderId,
       partId,
       status,
+      note,
     });
 
     const partResult = await client.query(
@@ -1288,32 +1305,17 @@ const approvePartReturn = async (orderId, partId, status, authorizedBy) => {
     let result;
     if (status === "Devolución Aprobada") {
       result = await client.query(
-        `
-        DELETE FROM order_parts
-        WHERE order_id = $1 AND part_id = $2
-        RETURNING *
-      `,
+        `DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2 RETURNING *`,
         [orderId, partId]
       );
-
       await client.query(
-        `
-        UPDATE parts
-        SET quantity = quantity + $1,
-            quantity_reserved = quantity_reserved - $1
-        WHERE id = $2
-      `,
+        `UPDATE parts SET quantity = quantity + $1 WHERE id = $2`,
         [quantity, partId]
       );
     } else if (status === "Devolución Rechazada") {
       result = await client.query(
-        `
-        UPDATE order_parts
-        SET status = $1, authorized_by = $2
-        WHERE order_id = $3 AND part_id = $4
-        RETURNING *
-      `,
-        [status, authorizedBy, orderId, partId]
+        `UPDATE order_parts SET status = $1, authorized_by = $2, note = $3 WHERE order_id = $4 AND part_id = $5 RETURNING *`,
+        [status, authorizedBy, note, orderId, partId]
       );
     } else {
       throw { status: 400, message: "Estado de devolución inválido" };
@@ -1326,20 +1328,12 @@ const approvePartReturn = async (orderId, partId, status, authorizedBy) => {
     if (!orderResult.rows.length) {
       throw { status: 404, message: "Orden no encontrada" };
     }
-    const technicianId = orderResult.rows[0].technician_id;
 
-    await notificationService.createNotification(
-      {
-        order_id: orderId,
-        from_user_id: authorizedBy,
-        to_user_id: technicianId,
-        message: `Devolución de ${partName} (${quantity}): ${status}`,
-        type: "part_return_status",
-        status: "Pendiente",
-      },
+    await notificationService.deletePartRequestNotification(
+      orderId,
+      partId,
       client
     );
-
     await client.query("COMMIT");
     console.log(
       "[ORDER_SERVICE] Transacción completada para approvePartReturn"
