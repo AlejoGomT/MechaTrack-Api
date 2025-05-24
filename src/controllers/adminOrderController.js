@@ -1,9 +1,28 @@
-// src/controllers/adminOrderController.js
 const adminOrderService = require("../services/adminOrderService");
 const { validationResult } = require("express-validator");
 const { check } = require("express-validator");
 
 const updateAdminOrder = [
+  (req, res, next) => {
+    if (req.body.parts && typeof req.body.parts === "string") {
+      try {
+        req.body.parts = JSON.parse(req.body.parts);
+      } catch (error) {
+        return res.status(400).json({
+          errors: [
+            {
+              location: "body",
+              msg: "Formato de repuestos inválido",
+              path: "parts",
+              value: req.body.parts,
+            },
+          ],
+        });
+      }
+    }
+    next();
+  },
+  // Validaciones
   check("type")
     .optional()
     .isIn(["Mantenimiento", "Reparación"])
@@ -33,8 +52,8 @@ const updateAdminOrder = [
     .withMessage("Los repuestos deben ser un arreglo"),
   check("parts.*.part_id")
     .optional()
-    .isInt({ min: 1 })
-    .withMessage("El ID del repuesto debe ser un número entero positivo"),
+    .isString()
+    .withMessage("El ID del repuesto debe ser una cadena"),
   check("parts.*.quantity")
     .optional()
     .isInt({ min: 0 })
@@ -43,6 +62,16 @@ const updateAdminOrder = [
     .optional()
     .isFloat({ min: 0 })
     .withMessage("El precio debe ser un número positivo"),
+  check("parts.*.requested_by")
+    .optional()
+    .isString()
+    .withMessage("El solicitante debe ser una cadena"),
+  check("parts.*.authorized_by")
+    .optional()
+    .isString()
+    .withMessage("El autorizante debe ser una cadena")
+    .custom((value) => value === null || typeof value === "string")
+    .withMessage("El autorizante debe ser una cadena o null"),
 
   async (req, res) => {
     try {
@@ -55,26 +84,44 @@ const updateAdminOrder = [
       const userId = req.user.id; // ID del admin desde el token
       let orderData = req.body;
 
-      // Manejar imágenes
       const newImages =
         req.files?.map((file) => `/Uploads/${file.filename}`) || [];
-      const existingImages = orderData.existingImages
-        ? Array.isArray(orderData.existingImages)
-          ? orderData.existingImages
-          : JSON.parse(orderData.existingImages || "[]")
-        : [];
+      let existingImages = [];
+      if (orderData.existingImages) {
+        try {
+          existingImages = Array.isArray(orderData.existingImages)
+            ? orderData.existingImages
+            : JSON.parse(orderData.existingImages);
+          if (!Array.isArray(existingImages)) {
+            throw new Error("existingImages debe ser un arreglo");
+          }
+        } catch (error) {
+          console.error("Error al parsear existingImages:", error);
+          existingImages = [];
+        }
+      }
       orderData.images = [...existingImages, ...newImages];
 
-      // Parsear parts si viene como string (desde FormData)
-      if (orderData.parts && typeof orderData.parts === "string") {
-        orderData.parts = JSON.parse(orderData.parts);
-      }
+      // Log para depuración
+      console.log("[updateAdminOrder] newImages:", newImages);
+      console.log("[updateAdminOrder] existingImages:", existingImages);
+      console.log("[updateAdminOrder] orderData.images:", orderData.images);
 
       const updatedOrder = await adminOrderService.updateAdminOrder(
         orderId,
         orderData,
         userId
       );
+
+      req.io?.emit("orderUpdated", {
+        orderId,
+        updatedOrder,
+      });
+      console.log("[updateAdminOrder] Emitiendo orderUpdated:", {
+        orderId,
+        updatedOrder,
+      });
+
       res.status(200).json(updatedOrder);
     } catch (error) {
       console.error("Error en updateAdminOrder:", error);
@@ -92,20 +139,51 @@ const addAdminImages = async (req, res) => {
     const userId = req.user.id;
     const newImages =
       req.files?.map((file) => `/Uploads/${file.filename}`) || [];
-    const existingImages = req.body.existingImages
-      ? Array.isArray(req.body.existingImages)
-        ? req.body.existingImages
-        : JSON.parse(req.body.existingImages || "[]")
-      : [];
+    let existingImages = [];
+    if (req.body.existingImages) {
+      try {
+        existingImages = Array.isArray(req.body.existingImages)
+          ? req.body.existingImages
+          : JSON.parse(req.body.existingImages);
+        if (!Array.isArray(existingImages)) {
+          throw new Error("existingImages debe ser un arreglo");
+        }
+      } catch (error) {
+        console.error(
+          "[addAdminImages] Error al parsear existingImages:",
+          error
+        );
+        return res
+          .status(400)
+          .json({ message: "Formato inválido de existingImages" });
+      }
+    }
+
+    const images = [...new Set([...existingImages, ...newImages])]; // Evitar duplicados
+    console.log("[addAdminImages] Imágenes a guardar:", images);
 
     const updatedOrder = await adminOrderService.addAdminImages(
       orderId,
-      { images: [...existingImages, ...newImages] },
+      { images },
       userId
     );
+
+    if (!updatedOrder.order?.images) {
+      throw new Error("No se actualizaron las imágenes en la orden");
+    }
+
+    req.io?.emit("orderUpdated", {
+      orderId,
+      updatedOrder: updatedOrder.order,
+    });
+    console.log("[addAdminImages] Emitiendo orderUpdated:", {
+      orderId,
+      updatedOrder: updatedOrder.order,
+    });
+
     res.status(200).json(updatedOrder);
   } catch (error) {
-    console.error("Error en addAdminImages:", error);
+    console.error("[addAdminImages] Error:", error);
     res.status(error.status || 500).json({
       message: error.message || "Error al añadir imágenes",
       details: error.details || error.message,
@@ -122,6 +200,16 @@ const deleteAdminImage = async (req, res) => {
       parseInt(imageIndex),
       userId
     );
+
+    req.io?.emit("orderUpdated", {
+      orderId,
+      updatedOrder: updatedOrder.order,
+    });
+    console.log("[deleteAdminImage] Emitiendo orderUpdated:", {
+      orderId,
+      updatedOrder,
+    });
+
     res.status(200).json(updatedOrder);
   } catch (error) {
     console.error("Error en deleteAdminImage:", error);
@@ -143,6 +231,16 @@ const addAdminPart = async (req, res) => {
       partData,
       userId
     );
+
+    req.io?.emit("partAdded", {
+      orderId,
+      part: result.part,
+    });
+    console.log("[addAdminPart] Emitiendo partAdded:", {
+      orderId,
+      part: result.part,
+    });
+
     res.status(201).json(result);
   } catch (error) {
     console.error("Error en addAdminPart:", error);

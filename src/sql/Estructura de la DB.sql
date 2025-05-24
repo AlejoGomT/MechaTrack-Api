@@ -604,24 +604,30 @@ RETURNS TRIGGER AS $$
 BEGIN
     RAISE NOTICE 'Trigger notify_order_part_update ejecutado para order_id: %, part_id: %, old_status: %, new_status: %, old_quantity: %, new_quantity: %', 
         NEW.order_id, NEW.part_id, OLD.status, NEW.status, OLD.quantity, NEW.quantity;
-CREATE OR REPLACE FUNCTION public.notify_order_part_update()
-RETURNS TRIGGER AS $$
-BEGIN
-    RAISE NOTICE 'Trigger notify_order_part_update ejecutado para order_id: %, part_id: %, old_status: %, new_status: %, old_quantity: %, new_quantity: %', 
-        NEW.order_id, NEW.part_id, OLD.status, NEW.status, OLD.quantity, NEW.quantity;
 
-    IF NEW.status IN ('Aprobado', 'Rechazado', 'Devolución Solicitada', 'Devolución Aprobada', 'Devolución Rechazada') AND OLD.status != NEW.status THEN
-        PERFORM create_order_part_notification(
-            NEW.order_id,
-            NEW.part_id,
-            NEW.quantity,
-            NEW.status,
-            NEW.price,
-            NEW.note,
-            NEW.requested_by,
-            NEW.authorized_by
-        );
-    ELSIF NEW.status = 'Solicitado' AND OLD.quantity != NEW.quantity THEN
+    -- Verificar si el usuario que autoriza es administrador
+    IF NEW.authorized_by IS NOT NULL THEN
+        PERFORM 1 FROM users WHERE id = NEW.authorized_by AND role = 'admin';
+        IF FOUND THEN
+            -- Generar notificaciones solo para estados relevantes
+            IF NEW.status IN ('Aprobado', 'Rechazado', 'Devolución Aprobada', 'Devolución Rechazada') 
+               AND OLD.status != NEW.status THEN
+                PERFORM create_order_part_notification(
+                    NEW.order_id,
+                    NEW.part_id,
+                    NEW.quantity,
+                    NEW.status,
+                    NEW.price,
+                    NEW.note,
+                    NEW.requested_by,
+                    NEW.authorized_by
+                );
+            END IF;
+        END IF;
+    END IF;
+
+    -- Permitir notificaciones para solicitudes (no requieren admin)
+    IF NEW.status = 'Solicitado' AND OLD.quantity != NEW.quantity THEN
         PERFORM create_order_part_notification(
             NEW.order_id,
             NEW.part_id,
@@ -633,6 +639,7 @@ BEGIN
             NEW.authorized_by
         );
     END IF;
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -808,6 +815,20 @@ BEGIN
             NULL,
             NULL
         );
+    ELSIF NEW.status = 'Finalizado' AND OLD.status != 'Finalizado' THEN
+        -- Solo generar notificación si el cambio es autorizado por un admin
+        PERFORM 1 FROM order_history oh 
+        JOIN users u ON oh.description LIKE '%' || u.id || '%' 
+        WHERE oh.order_id = NEW.id AND u.role = 'admin' 
+        AND oh.date >= CURRENT_TIMESTAMP - INTERVAL '1 minute';
+        IF FOUND THEN
+            PERFORM create_order_closure_notification(
+                NEW.id,
+                NEW.status,
+                NULL,
+                admin_id
+            );
+        END IF;
     ELSIF NEW.status = 'Pendiente de Facturación' AND OLD.status != 'Pendiente de Facturación' THEN
         INSERT INTO notifications (
             order_id, from_user_id, to_user_id, message, type, status, details, created_at

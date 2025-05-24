@@ -7,7 +7,6 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
   try {
     await client.query("BEGIN");
 
-    // Verificar que la orden existe y está en estado Finalizado
     const orderResult = await client.query(
       "SELECT status FROM orders WHERE id = $1",
       [orderId]
@@ -19,7 +18,6 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
       throw { status: 400, message: "La orden no está en estado Finalizado" };
     }
 
-    // Verificar que el usuario es administrador
     const userResult = await client.query(
       "SELECT role FROM users WHERE id = $1",
       [userId]
@@ -31,7 +29,6 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
       };
     }
 
-    // Preparar datos para actualizar
     const {
       type,
       description,
@@ -44,7 +41,6 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
       branch,
     } = orderData;
 
-    // Validar longitud de campos
     if (
       vehicle_economic_number &&
       String(vehicle_economic_number).length > 10
@@ -61,7 +57,6 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
       };
     }
 
-    // Actualizar orden
     const updates = [];
     const values = [orderId];
     let paramIndex = 2;
@@ -86,11 +81,6 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
       values.push(tasks || null);
       paramIndex++;
     }
-    if (mileage !== undefined) {
-      updates.push(`mileage = $${paramIndex}`);
-      values.push(mileage);
-      paramIndex++;
-    }
     if (images !== undefined) {
       updates.push(`images = $${paramIndex}`);
       values.push(images);
@@ -109,8 +99,7 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
       updatedOrder = orderResult.rows[0];
     }
 
-    // Actualizar vehículo si se proporcionan vehicle_economic_number y mileage
-    if (mileage && vehicle_economic_number && branch) {
+    if (mileage !== undefined && vehicle_economic_number && branch) {
       const vehicleResult = await client.query(
         "UPDATE vehicles SET mileage = $1 WHERE economic_number = $2 AND branch = $3 RETURNING *",
         [mileage, vehicle_economic_number, branch]
@@ -135,7 +124,6 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
           authorized_by,
         } = part;
 
-        // Validar datos del repuesto
         if (!part_id || !quantity || !requested_by) {
           throw {
             status: 400,
@@ -143,7 +131,6 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
           };
         }
 
-        // Verificar existencia del repuesto
         const partResult = await client.query(
           "SELECT price, quantity, quantity_reserved FROM parts WHERE id = $1 FOR UPDATE",
           [part_id]
@@ -158,7 +145,6 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
         const availableQuantity =
           partResult.rows[0].quantity - partResult.rows[0].quantity_reserved;
 
-        // Verificar usuarios
         const userResult = await client.query(
           "SELECT id FROM users WHERE id = $1",
           [requested_by]
@@ -182,7 +168,6 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
           }
         }
 
-        // Validar inventario
         const existingPart = await client.query(
           "SELECT quantity FROM order_parts WHERE order_id = $1 AND part_id = $2",
           [orderId, part_id]
@@ -199,12 +184,11 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
           };
         }
 
-        // Actualizar o insertar repuesto
         if (existingPart.rows.length) {
           await client.query(
             `
             UPDATE order_parts
-            SET quantity = $1, price = $2, status = $3, requested_by = $4, authorized_by = $5, updated_at = NOW()
+            SET quantity = $1, price = $2, status = $3, requested_by = $4, authorized_by = $5
             WHERE order_id = $6 AND part_id = $7
             `,
             [
@@ -220,8 +204,8 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
         } else {
           await client.query(
             `
-            INSERT INTO order_parts (order_id, part_id, quantity, price, status, requested_by, authorized_by, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+            INSERT INTO order_parts (order_id, part_id, quantity, price, status, requested_by, authorized_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             `,
             [
               orderId,
@@ -235,7 +219,6 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
           );
         }
 
-        // Ajustar inventario
         if (quantityChange !== 0) {
           await client.query(
             "UPDATE parts SET quantity_reserved = quantity_reserved + $1 WHERE id = $2",
@@ -245,7 +228,6 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
       }
     }
 
-    // Obtener repuestos actualizados
     const partsResult = await client.query(
       `
       SELECT op.*, p.name,
@@ -285,7 +267,7 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
     };
   } catch (error) {
     await client.query("ROLLBACK");
-    console.error("Error en updateAdminOrder:", error);
+    console.error("[updateAdminOrder] Error:", error);
     throw {
       status: error.status || 500,
       message: error.message || "Error al actualizar la orden",
@@ -325,6 +307,14 @@ const addAdminImages = async (orderId, { images }, userId) => {
       };
     }
 
+    // Validar imágenes
+    if (
+      !Array.isArray(images) ||
+      images.some((img) => typeof img !== "string")
+    ) {
+      throw { status: 400, message: "El formato de las imágenes es inválido" };
+    }
+
     // Actualizar imágenes
     const query = `
       UPDATE orders
@@ -332,13 +322,17 @@ const addAdminImages = async (orderId, { images }, userId) => {
       WHERE id = $2
       RETURNING *
     `;
+    console.log("[addAdminImages] Imágenes a guardar en DB:", images);
     const result = await client.query(query, [images, orderId]);
     const updatedOrder = result.rows[0];
+
+    console.log("[addAdminImages] Orden actualizada:", updatedOrder);
 
     await client.query("COMMIT");
     return { order: updatedOrder };
   } catch (error) {
     await client.query("ROLLBACK");
+    console.error("[addAdminImages] Error en servicio:", error);
     throw {
       status: error.status || 500,
       message: error.message || "Error al añadir imágenes",
@@ -387,7 +381,7 @@ const deleteAdminImage = async (orderId, imageIndex, userId) => {
         __dirname,
         "..",
         "..",
-        "uploads",
+        "Uploads",
         path.basename(imagePath)
       );
       try {
@@ -450,7 +444,7 @@ const addAdminPart = async (orderId, partData, userId) => {
 
     // Verificar administrador
     const userResult = await client.query(
-      "SELECT role FROM users WHERE id = $1",
+      "SELECT role, first_name, last_name FROM users WHERE id = $1",
       [userId]
     );
     if (userResult.rows.length === 0 || userResult.rows[0].role !== "admin") {
@@ -491,7 +485,7 @@ const addAdminPart = async (orderId, partData, userId) => {
 
     // Verificar usuarios
     const reqUserResult = await client.query(
-      "SELECT id FROM users WHERE id = $1",
+      "SELECT id, first_name, last_name FROM users WHERE id = $1",
       [requested_by]
     );
     if (!reqUserResult.rows.length) {
@@ -500,9 +494,10 @@ const addAdminPart = async (orderId, partData, userId) => {
         message: `Usuario con ID ${requested_by} no encontrado`,
       };
     }
+    let authUserResult = { rows: [] };
     if (authorized_by) {
-      const authUserResult = await client.query(
-        "SELECT id FROM users WHERE id = $1",
+      authUserResult = await client.query(
+        "SELECT id, first_name, last_name FROM users WHERE id = $1",
         [authorized_by]
       );
       if (!authUserResult.rows.length) {
@@ -515,8 +510,8 @@ const addAdminPart = async (orderId, partData, userId) => {
 
     // Insertar repuesto
     const query = `
-      INSERT INTO order_parts (order_id, part_id, quantity, price, status, requested_by, authorized_by, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+      INSERT INTO order_parts (order_id, part_id, quantity, price, status, requested_by, authorized_by)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
     `;
     const values = [
