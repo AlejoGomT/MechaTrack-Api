@@ -67,12 +67,23 @@ router.delete(
   restrictTo("admin"),
   adminOrderController.deleteAdminImage
 );
-
 router.post(
   "/orders/:orderId/parts",
   authenticateToken,
   restrictTo("admin"),
   adminOrderController.addAdminPart
+);
+router.put(
+  "/orders/:orderId/parts/:partId",
+  authenticateToken,
+  restrictTo("admin"),
+  adminOrderController.editAdminPart
+);
+router.delete(
+  "/orders/:orderId/parts/:partId",
+  authenticateToken,
+  restrictTo("admin"),
+  adminOrderController.deleteAdminPart
 );
 
 module.exports = router;

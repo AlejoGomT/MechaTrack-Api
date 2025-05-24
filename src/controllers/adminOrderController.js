@@ -383,9 +383,212 @@ const addAdminPart = [
   },
 ];
 
+const editAdminPart = [
+  check("quantity")
+    .isInt({ min: 0 })
+    .withMessage("La cantidad debe ser un número entero no negativo"),
+  check("price")
+    .isFloat({ min: 0 })
+    .withMessage("El precio debe ser un número no negativo"),
+
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { orderId, partId } = req.params;
+      const { quantity, price } = req.body;
+      const userId = req.user.id;
+
+      console.log("[editAdminPart] Editando repuesto:", {
+        orderId,
+        partId,
+        quantity,
+        price,
+        userId,
+      });
+
+      const result = await adminOrderService.editAdminPart(
+        orderId,
+        partId,
+        { quantity, price },
+        userId
+      );
+
+      // Obtener orden actualizada
+      const orderResult = await pool.query(
+        `
+        SELECT o.*, 
+               v.economic_number, v.plate, v.brand, v.model, v.year, v.mileage, v.branch
+        FROM orders o
+        LEFT JOIN vehicles v ON o.vehicle_economic_number = v.economic_number
+        WHERE o.id = $1
+        `,
+        [orderId]
+      );
+      const updatedOrder = orderResult.rows[0];
+
+      const partsResult = await pool.query(
+        `
+        SELECT op.*, p.name,
+               req_user.first_name AS requested_by_first_name,
+               req_user.last_name AS requested_by_last_name,
+               auth_user.first_name AS authorized_by_first_name,
+               auth_user.last_name AS authorized_by_last_name
+        FROM order_parts op
+        JOIN parts p ON op.part_id = p.id
+        LEFT JOIN users req_user ON op.requested_by = req_user.id
+        LEFT JOIN users auth_user ON op.authorized_by = auth_user.id
+        WHERE op.order_id = $1
+        `,
+        [orderId]
+      );
+
+      updatedOrder.parts = partsResult.rows.map((part) => ({
+        part_id: part.part_id,
+        name: part.name,
+        quantity: part.quantity,
+        price: part.price,
+        status: part.status,
+        requested_by_id: part.requested_by,
+        requested_by: part.requested_by_first_name
+          ? `${part.requested_by_first_name} ${part.requested_by_last_name}`
+          : "Administrador",
+        authorized_by_id: part.authorized_by,
+        authorized_by: part.authorized_by_first_name
+          ? `${part.authorized_by_first_name} ${part.authorized_by_last_name}`
+          : null,
+      }));
+
+      console.log("[editAdminPart] updatedOrder:", {
+        orderId,
+        updatedOrder,
+        parts: updatedOrder.parts,
+      });
+
+      req.io?.emit("orderUpdated", {
+        orderId,
+        updatedOrder,
+      });
+      console.log("[editAdminPart] Emitiendo orderUpdated:", {
+        orderId,
+        updatedOrder,
+      });
+
+      res.status(200).json(result);
+    } catch (error) {
+      console.error("[editAdminPart] Error:", error);
+      res.status(error.status || 500).json({
+        message: error.message || "Error al actualizar repuesto",
+        details: error.details || error.message,
+      });
+    }
+  },
+];
+
+const deleteAdminPart = [
+  check("partId").notEmpty().withMessage("El ID del repuesto es obligatorio"),
+
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const { orderId, partId } = req.params;
+      const userId = req.user.id;
+
+      console.log("[deleteAdminPart] Eliminando repuesto:", {
+        orderId,
+        partId,
+        userId,
+      });
+
+      const result = await adminOrderService.deleteAdminPart(
+        orderId,
+        partId,
+        userId
+      );
+
+      // Obtener orden actualizada
+      const orderResult = await pool.query(
+        `
+        SELECT o.*, 
+               v.economic_number, v.plate, v.brand, v.model, v.year, v.mileage, v.branch
+        FROM orders o
+        LEFT JOIN vehicles v ON o.vehicle_economic_number = v.economic_number
+        WHERE o.id = $1
+        `,
+        [orderId]
+      );
+      const updatedOrder = orderResult.rows[0];
+
+      const partsResult = await pool.query(
+        `
+        SELECT op.*, p.name,
+               req_user.first_name AS requested_by_first_name,
+               req_user.last_name AS requested_by_last_name,
+               auth_user.first_name AS authorized_by_first_name,
+               auth_user.last_name AS authorized_by_last_name
+        FROM order_parts op
+        JOIN parts p ON op.part_id = p.id
+        LEFT JOIN users req_user ON op.requested_by = req_user.id
+        LEFT JOIN users auth_user ON op.authorized_by = auth_user.id
+        WHERE op.order_id = $1
+        `,
+        [orderId]
+      );
+
+      updatedOrder.parts = partsResult.rows.map((part) => ({
+        part_id: part.part_id,
+        name: part.name,
+        quantity: part.quantity,
+        price: part.price,
+        status: part.status,
+        requested_by_id: part.requested_by,
+        requested_by: part.requested_by_first_name
+          ? `${part.requested_by_first_name} ${part.requested_by_last_name}`
+          : "Administrador",
+        authorized_by_id: part.authorized_by,
+        authorized_by: part.authorized_by_first_name
+          ? `${part.authorized_by_first_name} ${part.authorized_by_last_name}`
+          : null,
+      }));
+
+      console.log("[deleteAdminPart] updatedOrder:", {
+        orderId,
+        updatedOrder,
+        parts: updatedOrder.parts,
+      });
+
+      req.io?.emit("orderUpdated", {
+        orderId,
+        updatedOrder,
+      });
+      console.log("[deleteAdminPart] Emitiendo orderUpdated:", {
+        orderId,
+        updatedOrder,
+      });
+
+      res.status(200).json(result);
+    } catch (error) {
+      console.error("[deleteAdminPart] Error:", error);
+      res.status(error.status || 500).json({
+        message: error.message || "Error al eliminar repuesto",
+        details: error.details || error.message,
+      });
+    }
+  },
+];
+
 module.exports = {
   updateAdminOrder,
   addAdminImages,
   deleteAdminImage,
   addAdminPart,
+  editAdminPart,
+  deleteAdminPart,
 };

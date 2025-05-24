@@ -589,9 +589,179 @@ const addAdminPart = async (orderId, partData, userId) => {
   }
 };
 
+const editAdminPart = async (orderId, partId, partData, userId) => {
+  const { quantity, price } = partData;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // Verificar orden finalizada
+    const orderResult = await client.query(
+      "SELECT status FROM orders WHERE id = $1",
+      [orderId]
+    );
+    if (orderResult.rows.length === 0) {
+      throw { status: 404, message: "Orden no encontrada" };
+    }
+    if (orderResult.rows[0].status !== "Finalizado") {
+      throw { status: 400, message: "La orden no está en estado Finalizado" };
+    }
+
+    // Verificar administrador
+    const userResult = await client.query(
+      "SELECT role FROM users WHERE id = $1",
+      [userId]
+    );
+    if (userResult.rows.length === 0 || userResult.rows[0].role !== "admin") {
+      throw {
+        status: 403,
+        message: "No autorizado: se requiere rol de administrador",
+      };
+    }
+
+    // Obtener datos actuales del repuesto
+    const currentPart = await client.query(
+      "SELECT quantity FROM order_parts WHERE order_id = $1 AND part_id = $2 FOR UPDATE",
+      [orderId, partId]
+    );
+    if (currentPart.rows.length === 0) {
+      throw { status: 404, message: "Repuesto no encontrado en la orden" };
+    }
+    const currentQuantity = currentPart.rows[0].quantity;
+
+    // Validar cantidad
+    if (quantity < 0) {
+      throw { status: 400, message: "La cantidad no puede ser negativa" };
+    }
+    if (price < 0) {
+      throw { status: 400, message: "El precio no puede ser negativo" };
+    }
+
+    // Calcular cambio en cantidad
+    const quantityChange = quantity - currentQuantity;
+
+    // Verificar inventario disponible si quantity aumenta
+    if (quantityChange > 0) {
+      const partInventory = await client.query(
+        "SELECT quantity, quantity_reserved FROM parts WHERE id = $1 FOR UPDATE",
+        [partId]
+      );
+      if (partInventory.rows.length === 0) {
+        throw { status: 404, message: "Repuesto no encontrado en inventario" };
+      }
+      const availableQuantity =
+        partInventory.rows[0].quantity -
+        partInventory.rows[0].quantity_reserved;
+      if (quantityChange > availableQuantity) {
+        throw {
+          status: 400,
+          message: `Inventario insuficiente. Disponible: ${availableQuantity}, Solicitado: ${quantityChange}`,
+        };
+      }
+    }
+
+    // Actualizar order_parts
+    await client.query(
+      "UPDATE order_parts SET quantity = $1, price = $2 WHERE order_id = $3 AND part_id = $4",
+      [quantity, price, orderId, partId]
+    );
+
+    // Ajustar quantity en parts
+    if (quantityChange !== 0) {
+      await client.query(
+        "UPDATE parts SET quantity = quantity - $1 WHERE id = $2",
+        [quantityChange, partId]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    return { message: "Repuesto actualizado correctamente" };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("[editAdminPart] Error:", error);
+    throw {
+      status: error.status || 500,
+      message: error.message || "Error al actualizar repuesto",
+      details: error.details || error.message,
+    };
+  } finally {
+    client.release();
+  }
+};
+
+const deleteAdminPart = async (orderId, partId, userId) => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // Verificar orden finalizada
+    const orderResult = await client.query(
+      "SELECT status FROM orders WHERE id = $1",
+      [orderId]
+    );
+    if (orderResult.rows.length === 0) {
+      throw { status: 404, message: "Orden no encontrada" };
+    }
+    if (orderResult.rows[0].status !== "Finalizado") {
+      throw { status: 400, message: "La orden no está en estado Finalizado" };
+    }
+
+    // Verificar administrador
+    const userResult = await client.query(
+      "SELECT role FROM users WHERE id = $1",
+      [userId]
+    );
+    if (userResult.rows.length === 0 || userResult.rows[0].role !== "admin") {
+      throw {
+        status: 403,
+        message: "No autorizado: se requiere rol de administrador",
+      };
+    }
+
+    // Obtener cantidad actual del repuesto
+    const currentPart = await client.query(
+      "SELECT quantity FROM order_parts WHERE order_id = $1 AND part_id = $2 FOR UPDATE",
+      [orderId, partId]
+    );
+    if (currentPart.rows.length === 0) {
+      throw { status: 404, message: "Repuesto no encontrado en la orden" };
+    }
+    const quantity = currentPart.rows[0].quantity;
+
+    // Eliminar de order_parts
+    await client.query(
+      "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2",
+      [orderId, partId]
+    );
+
+    // Restaurar quantity en parts
+    await client.query(
+      "UPDATE parts SET quantity = quantity + $1 WHERE id = $2",
+      [quantity, partId]
+    );
+
+    await client.query("COMMIT");
+
+    return { message: "Repuesto eliminado correctamente" };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("[deleteAdminPart] Error:", error);
+    throw {
+      status: error.status || 500,
+      message: error.message || "Error al eliminar repuesto",
+      details: error.details || error.message,
+    };
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   updateAdminOrder,
   addAdminImages,
   deleteAdminImage,
   addAdminPart,
+  editAdminPart,
+  deleteAdminPart,
 };

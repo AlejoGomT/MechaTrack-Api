@@ -861,6 +861,32 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION public.notify_order_part_delete()
+RETURNS TRIGGER AS $$
+DECLARE
+  order_status VARCHAR(20);
+BEGIN
+  -- Obtener el estado de la orden
+  SELECT status INTO order_status 
+  FROM orders 
+  WHERE id = OLD.order_id;
+
+  IF order_status = 'Finalizado' THEN
+    RAISE NOTICE 'Orden % en estado Finalizado, omitiendo notificaciones', OLD.order_id;
+    RETURN OLD;
+  END IF;
+
+  -- Liberar quantity_reserved para órdenes no finalizadas
+  IF OLD.status = 'Solicitado' THEN
+    UPDATE parts
+    SET quantity_reserved = GREATEST(quantity_reserved - OLD.quantity, 0)
+    WHERE id = OLD.part_id;
+  END IF;
+
+  RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
 -- Creating view
 CREATE VIEW public.conversations AS
  SELECT n.order_id,
@@ -922,6 +948,7 @@ CREATE INDEX idx_parts_quantity ON public.parts USING btree (id, quantity, quant
 -- Creating triggers
 DROP TRIGGER IF EXISTS order_parts_notification_trigger ON public.order_parts;
 DROP TRIGGER IF EXISTS order_parts_update_notification_trigger ON public.order_parts;
+CREATE TRIGGER notify_order_part_delete AFTER DELETE ON order_parts FOR EACH ROW EXECUTE FUNCTION notify_order_part_delete();
 CREATE TRIGGER check_single_admin_secretary BEFORE INSERT OR UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.restrict_single_admin_secretary();
 CREATE TRIGGER order_parts_notification_trigger AFTER INSERT ON public.order_parts FOR EACH ROW EXECUTE FUNCTION public.notify_order_part_insert();
 CREATE TRIGGER order_parts_update_notification_trigger AFTER UPDATE OF status, quantity ON public.order_parts FOR EACH ROW EXECUTE FUNCTION public.notify_order_part_update();
