@@ -1,5 +1,6 @@
 const adminOrderService = require("../services/adminOrderService");
 const { validationResult } = require("express-validator");
+const pool = require("../config/database");
 const { check } = require("express-validator");
 
 const updateAdminOrder = [
@@ -72,8 +73,29 @@ const updateAdminOrder = [
     .withMessage("El autorizante debe ser una cadena")
     .custom((value) => value === null || typeof value === "string")
     .withMessage("El autorizante debe ser una cadena o null"),
+  check("vehicle_economic_number")
+    .optional()
+    .isString()
+    .isLength({ max: 10 })
+    .withMessage("El número económico no puede exceder los 10 caracteres"),
+  check("plate")
+    .optional()
+    .isString()
+    .withMessage("La placa debe ser una cadena"),
+  check("brand")
+    .optional()
+    .isString()
+    .withMessage("La marca debe ser una cadena"),
+  check("model")
+    .optional()
+    .isString()
+    .withMessage("El modelo debe ser una cadena"),
+  check("year")
+    .optional()
+    .isInt({ min: 1900, max: new Date().getFullYear() + 1 })
+    .withMessage("El año debe ser válido"),
 
-  async (req, res) => {
+  async (req, res, next) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
@@ -81,7 +103,7 @@ const updateAdminOrder = [
       }
 
       const { orderId } = req.params;
-      const userId = req.user.id; // ID del admin desde el token
+      const userId = req.user.id;
       let orderData = req.body;
 
       const newImages =
@@ -96,22 +118,59 @@ const updateAdminOrder = [
             throw new Error("existingImages debe ser un arreglo");
           }
         } catch (error) {
-          console.error("Error al parsear existingImages:", error);
-          existingImages = [];
+          console.error(
+            "[updateAdminOrder] Error al parsear existingImages:",
+            error
+          );
+          return res
+            .status(400)
+            .json({ message: "Formato inválido de existingImages" });
         }
       }
-      orderData.images = [...existingImages, ...newImages];
+      orderData.images = [...new Set([...existingImages, ...newImages])];
 
-      // Log para depuración
-      console.log("[updateAdminOrder] newImages:", newImages);
-      console.log("[updateAdminOrder] existingImages:", existingImages);
-      console.log("[updateAdminOrder] orderData.images:", orderData.images);
+      // Incluir datos del vehículo en orderData
+      orderData.vehicle_economic_number =
+        orderData.vehicle_economic_number || undefined;
+      orderData.plate = orderData.plate || undefined;
+      orderData.brand = orderData.brand || undefined;
+      orderData.model = orderData.model || undefined;
+      orderData.year = orderData.year || undefined;
+      orderData.mileage = orderData.mileage
+        ? parseInt(orderData.mileage)
+        : undefined;
+
+      console.log("[updateAdminOrder] orderData:", {
+        orderId,
+        ...orderData,
+        vehicleData: {
+          vehicle_economic_number: orderData.vehicle_economic_number,
+          plate: orderData.plate,
+          brand: orderData.brand,
+          model: orderData.model,
+          year: orderData.year,
+          mileage: orderData.mileage,
+        },
+      });
 
       const updatedOrder = await adminOrderService.updateAdminOrder(
         orderId,
         orderData,
         userId
       );
+
+      console.log("[updateAdminOrder] updatedOrder:", {
+        orderId,
+        updatedOrder,
+        vehicleData: {
+          vehicle_economic_number: updatedOrder.vehicle_economic_number,
+          plate: updatedOrder.plate,
+          brand: updatedOrder.brand,
+          model: updatedOrder.model,
+          year: updatedOrder.year,
+          mileage: updatedOrder.mileage,
+        },
+      });
 
       req.io?.emit("orderUpdated", {
         orderId,
@@ -124,7 +183,7 @@ const updateAdminOrder = [
 
       res.status(200).json(updatedOrder);
     } catch (error) {
-      console.error("Error en updateAdminOrder:", error);
+      console.error("[updateAdminOrder] Error:", error);
       res.status(error.status || 500).json({
         message: error.message || "Error al actualizar la orden",
         details: error.details || error.message,
@@ -220,36 +279,109 @@ const deleteAdminImage = async (req, res) => {
   }
 };
 
-const addAdminPart = async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const userId = req.user.id;
-    const partData = req.body;
+const addAdminPart = [
+  check("part_id").notEmpty().withMessage("El ID del repuesto es obligatorio"),
+  check("quantity")
+    .isInt({ min: 1 })
+    .withMessage("La cantidad debe ser un número entero positivo"),
+  check("price")
+    .optional()
+    .isFloat({ min: 0 })
+    .withMessage("El precio debe ser un número no negativo"),
 
-    const result = await adminOrderService.addAdminPart(
-      orderId,
-      partData,
-      userId
-    );
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
 
-    req.io?.emit("partAdded", {
-      orderId,
-      part: result.part,
-    });
-    console.log("[addAdminPart] Emitiendo partAdded:", {
-      orderId,
-      part: result.part,
-    });
+      const { orderId } = req.params;
+      const partData = req.body;
+      const userId = req.user.id;
 
-    res.status(201).json(result);
-  } catch (error) {
-    console.error("Error en addAdminPart:", error);
-    res.status(error.status || 500).json({
-      message: error.message || "Error al añadir repuesto",
-      details: error.details || error.message,
-    });
-  }
-};
+      console.log("[addAdminPart] Añadiendo repuesto:", {
+        orderId,
+        partData,
+        userId,
+      });
+
+      const result = await adminOrderService.addAdminPart(
+        orderId,
+        partData,
+        userId
+      );
+
+      // Obtener orden actualizada para emitir evento
+      const orderResult = await pool.query(
+        `
+        SELECT o.*, 
+               v.economic_number, v.plate, v.brand, v.model, v.year, v.mileage, v.branch
+        FROM orders o
+        LEFT JOIN vehicles v ON o.vehicle_economic_number = v.economic_number
+        WHERE o.id = $1
+        `,
+        [orderId]
+      );
+      const updatedOrder = orderResult.rows[0];
+
+      const partsResult = await pool.query(
+        `
+        SELECT op.*, p.name,
+               req_user.first_name AS requested_by_first_name,
+               req_user.last_name AS requested_by_last_name,
+               auth_user.first_name AS authorized_by_first_name,
+               auth_user.last_name AS authorized_by_last_name
+        FROM order_parts op
+        JOIN parts p ON op.part_id = p.id
+        LEFT JOIN users req_user ON op.requested_by = req_user.id
+        LEFT JOIN users auth_user ON op.authorized_by = auth_user.id
+        WHERE op.order_id = $1
+        `,
+        [orderId]
+      );
+
+      updatedOrder.parts = partsResult.rows.map((part) => ({
+        part_id: part.part_id,
+        name: part.name,
+        quantity: part.quantity,
+        price: part.price,
+        status: part.status,
+        requested_by_id: part.requested_by,
+        requested_by: part.requested_by_first_name
+          ? `${part.requested_by_first_name} ${part.requested_by_last_name}`
+          : "Administrador",
+        authorized_by_id: part.authorized_by,
+        authorized_by: part.authorized_by_first_name
+          ? `${part.authorized_by_first_name} ${part.authorized_by_last_name}`
+          : null,
+      }));
+
+      console.log("[addAdminPart] updatedOrder:", {
+        orderId,
+        updatedOrder,
+        parts: updatedOrder.parts,
+      });
+
+      req.io?.emit("orderUpdated", {
+        orderId,
+        updatedOrder,
+      });
+      console.log("[addAdminPart] Emitiendo orderUpdated:", {
+        orderId,
+        updatedOrder,
+      });
+
+      res.status(200).json(result);
+    } catch (error) {
+      console.error("[addAdminPart] Error:", error);
+      res.status(error.status || 500).json({
+        message: error.message || "Error al añadir repuesto",
+        details: error.details || error.message,
+      });
+    }
+  },
+];
 
 module.exports = {
   updateAdminOrder,

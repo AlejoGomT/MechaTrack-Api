@@ -7,8 +7,9 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
   try {
     await client.query("BEGIN");
 
+    // Consultar orden sin asumir que tiene branch
     const orderResult = await client.query(
-      "SELECT status FROM orders WHERE id = $1",
+      "SELECT status, vehicle_economic_number FROM orders WHERE id = $1",
       [orderId]
     );
     if (orderResult.rows.length === 0) {
@@ -39,6 +40,10 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
       images = [],
       vehicle_economic_number,
       branch,
+      plate,
+      brand,
+      model,
+      year,
     } = orderData;
 
     if (
@@ -86,6 +91,11 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
       values.push(images);
       paramIndex++;
     }
+    if (vehicle_economic_number !== undefined) {
+      updates.push(`vehicle_economic_number = $${paramIndex}`);
+      values.push(vehicle_economic_number || null);
+      paramIndex++;
+    }
     updates.push(`updated_at = CURRENT_TIMESTAMP`);
 
     let updatedOrder;
@@ -99,9 +109,11 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
       updatedOrder = orderResult.rows[0];
     }
 
+    // Actualizar mileage en vehicles si se proporcionaron los datos necesarios
+    let vehicleData = {};
     if (mileage !== undefined && vehicle_economic_number && branch) {
       const vehicleResult = await client.query(
-        "UPDATE vehicles SET mileage = $1 WHERE economic_number = $2 AND branch = $3 RETURNING *",
+        "UPDATE vehicles SET mileage = $1 WHERE economic_number = $2 AND branch = $3 RETURNING economic_number, plate, brand, model, year, mileage, branch",
         [mileage, vehicle_economic_number, branch]
       );
       if (!vehicleResult.rows.length) {
@@ -110,6 +122,14 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
           message: `Vehículo con economic_number ${vehicle_economic_number} y branch ${branch} no encontrado`,
         };
       }
+      vehicleData = vehicleResult.rows[0];
+    } else if (updatedOrder.vehicle_economic_number) {
+      // Consultar datos del vehículo si no se actualizó mileage
+      const vehicleResult = await client.query(
+        "SELECT economic_number, plate, brand, model, year, mileage, branch FROM vehicles WHERE economic_number = $1",
+        [updatedOrder.vehicle_economic_number]
+      );
+      vehicleData = vehicleResult.rows[0] || {};
     }
 
     // Actualizar repuestos (order_parts)
@@ -264,6 +284,14 @@ const updateAdminOrder = async (orderId, orderData, userId) => {
           : null,
       })),
       images,
+      vehicle_economic_number:
+        updatedOrder.vehicle_economic_number || vehicleData.economic_number,
+      plate: vehicleData.plate,
+      brand: vehicleData.brand,
+      model: vehicleData.model,
+      year: vehicleData.year,
+      branch: vehicleData.branch,
+      mileage: vehicleData.mileage,
     };
   } catch (error) {
     await client.query("ROLLBACK");
@@ -455,15 +483,20 @@ const addAdminPart = async (orderId, partData, userId) => {
     }
 
     // Validar datos del repuesto
-    const { part_id, quantity, price, status, requested_by, authorized_by } =
-      partData;
-    if (!part_id || !quantity || !requested_by) {
-      throw { status: 400, message: "Datos de repuesto inválidos" };
+    const { part_id, quantity, price } = partData;
+    if (!part_id || !quantity) {
+      throw {
+        status: 400,
+        message: "Faltan datos del repuesto (part_id, quantity)",
+      };
+    }
+    if (quantity <= 0) {
+      throw { status: 400, message: "La cantidad debe ser mayor que cero" };
     }
 
     // Verificar repuesto
     const partResult = await client.query(
-      "SELECT price, quantity, quantity_reserved, name FROM parts WHERE id = $1 FOR UPDATE",
+      "SELECT id, name, quantity, price FROM parts WHERE id = $1 FOR UPDATE",
       [part_id]
     );
     if (!partResult.rows.length) {
@@ -472,86 +505,80 @@ const addAdminPart = async (orderId, partData, userId) => {
         message: `Repuesto con ID ${part_id} no encontrado`,
       };
     }
-    const partPrice = price || partResult.rows[0].price;
-    const availableQuantity =
-      partResult.rows[0].quantity - partResult.rows[0].quantity_reserved;
-
-    if (quantity > availableQuantity) {
+    const part = partResult.rows[0];
+    if (quantity > part.quantity) {
       throw {
         status: 400,
-        message: `Inventario insuficiente para el repuesto ${part_id}. Disponible: ${availableQuantity}, Solicitado: ${quantity}`,
+        message: `Inventario insuficiente para el repuesto ${part_id}. Disponible: ${part.quantity}, Solicitado: ${quantity}`,
       };
     }
 
-    // Verificar usuarios
-    const reqUserResult = await client.query(
-      "SELECT id, first_name, last_name FROM users WHERE id = $1",
-      [requested_by]
-    );
-    if (!reqUserResult.rows.length) {
-      throw {
-        status: 400,
-        message: `Usuario con ID ${requested_by} no encontrado`,
-      };
-    }
-    let authUserResult = { rows: [] };
-    if (authorized_by) {
-      authUserResult = await client.query(
-        "SELECT id, first_name, last_name FROM users WHERE id = $1",
-        [authorized_by]
-      );
-      if (!authUserResult.rows.length) {
-        throw {
-          status: 400,
-          message: `Usuario autorizado con ID ${authorized_by} no encontrado`,
-        };
-      }
-    }
+    // Usar el precio proporcionado o el precio del repuesto
+    const finalPrice = price !== undefined ? price : part.price;
 
-    // Insertar repuesto
-    const query = `
+    // Insertar en order_parts con estado Aprobado
+    const insertQuery = `
       INSERT INTO order_parts (order_id, part_id, quantity, price, status, requested_by, authorized_by)
       VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
     `;
-    const values = [
+    const insertValues = [
       orderId,
       part_id,
       quantity,
-      partPrice,
-      status || "Aprobado",
-      requested_by,
-      authorized_by || userId,
+      finalPrice,
+      "Aprobado",
+      userId,
+      userId,
     ];
-    const result = await client.query(query, values);
+    const orderPartResult = await client.query(insertQuery, insertValues);
 
-    // Actualizar inventario
+    // Actualizar solo quantity en parts
     await client.query(
-      "UPDATE parts SET quantity_reserved = quantity_reserved + $1 WHERE id = $2",
+      "UPDATE parts SET quantity = GREATEST(quantity - $1, 0) WHERE id = $2",
       [quantity, part_id]
+    );
+
+    // Obtener datos completos del repuesto
+    const partDetails = await client.query(
+      `
+      SELECT op.*, p.name,
+             req_user.first_name AS requested_by_first_name,
+             req_user.last_name AS requested_by_last_name,
+             auth_user.first_name AS authorized_by_first_name,
+             auth_user.last_name AS authorized_by_last_name
+      FROM order_parts op
+      JOIN parts p ON op.part_id = p.id
+      LEFT JOIN users req_user ON op.requested_by = req_user.id
+      LEFT JOIN users auth_user ON op.authorized_by = auth_user.id
+      WHERE op.order_id = $1 AND op.part_id = $2
+      `,
+      [orderId, part_id]
     );
 
     await client.query("COMMIT");
 
+    const newPart = partDetails.rows[0];
     return {
       part: {
-        part_id: result.rows[0].part_id,
-        name: partResult.rows[0].name,
-        quantity: result.rows[0].quantity,
-        price: result.rows[0].price,
-        status: result.rows[0].status,
-        requested_by_id: result.rows[0].requested_by,
-        requested_by: reqUserResult.rows[0].first_name
-          ? `${reqUserResult.rows[0].first_name} ${reqUserResult.rows[0].last_name}`
-          : "Técnico",
-        authorized_by_id: result.rows[0].authorized_by,
-        authorized_by: authUserResult.rows[0]?.first_name
-          ? `${authUserResult.rows[0].first_name} ${authUserResult.rows[0].last_name}`
-          : null,
+        part_id: newPart.part_id,
+        name: newPart.name,
+        quantity: newPart.quantity,
+        price: newPart.price,
+        status: newPart.status,
+        requested_by_id: newPart.requested_by,
+        requested_by: newPart.requested_by_first_name
+          ? `${newPart.requested_by_first_name} ${newPart.requested_by_last_name}`
+          : "Administrador",
+        authorized_by_id: newPart.authorized_by,
+        authorized_by: newPart.authorized_by_first_name
+          ? `${newPart.authorized_by_first_name} ${newPart.authorized_by_last_name}`
+          : "Administrador",
       },
     };
   } catch (error) {
     await client.query("ROLLBACK");
+    console.error("[addAdminPart] Error:", error);
     throw {
       status: error.status || 500,
       message: error.message || "Error al añadir repuesto",

@@ -161,8 +161,8 @@ CREATE OR REPLACE FUNCTION public.create_order_part_notification(
     p_requested_by character varying,
     p_authorized_by character varying
 ) RETURNS void
-    LANGUAGE plpgsql
-    AS $$
+LANGUAGE plpgsql
+AS $$
 DECLARE
     part_name VARCHAR(100);
     admin_id VARCHAR(10);
@@ -171,8 +171,21 @@ DECLARE
     notification_message TEXT;
     notification_details JSONB;
     existing_notification RECORD;
+    order_status VARCHAR(25);
 BEGIN
     RAISE NOTICE 'Ejecutando create_order_part_notification para order_id: %, part_id: %, status: %, quantity: %', p_order_id, p_part_id, p_status, p_quantity;
+
+    -- Obtener el estado de la orden
+    SELECT status INTO order_status FROM orders WHERE id = p_order_id;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Orden con ID % no encontrada', p_order_id;
+    END IF;
+
+    -- Si la orden está Finalizada, omitir notificaciones y ajustes de quantity_reserved
+    IF order_status = 'Finalizado' THEN
+        RAISE NOTICE 'Orden % en estado Finalizado, omitiendo notificaciones y ajustes de quantity_reserved', p_order_id;
+        RETURN;
+    END IF;
 
     -- Obtener el nombre de la parte
     SELECT name INTO part_name FROM parts WHERE id = p_part_id;
