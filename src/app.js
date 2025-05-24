@@ -3,6 +3,7 @@ const cors = require("cors");
 const path = require("path");
 const authRoutes = require("./routes/authRoutes");
 const orderRoutes = require("./routes/orderRoutes");
+const adminOrderRoutes = require("./routes/adminOrderRoutes");
 const userRoutes = require("./routes/userRoutes");
 const vehicleRoutes = require("./routes/vehicleRoutes");
 const partRoutes = require("./routes/partRoutes");
@@ -27,17 +28,12 @@ app.use("/uploads", express.static("uploads"));
 // Rutas
 app.use("/api/auth", authRoutes);
 app.use("/api/orders", orderRoutes);
+app.use("/api/admin", adminOrderRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/vehicles", vehicleRoutes);
 app.use("/api/parts", partRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/reports", reportRoutes);
-
 app.use(errorHandler);
-
-// Ruta de prueba
-app.get("/", (req, res) => {
-  res.json({ message: "API Mechatrack funcionando" });
-});
 
 module.exports = app;

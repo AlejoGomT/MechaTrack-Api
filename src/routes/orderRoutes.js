@@ -7,7 +7,6 @@ const { restrictTo } = require("../middleware/role");
 const multer = require("multer");
 const path = require("path");
 const pool = require("../config/database");
-const notificationService = require("../services/notificationService");
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
