@@ -404,12 +404,12 @@ const deleteAdminImage = async (orderId, imageIndex, userId) => {
 
     // Eliminar imagen del sistema de archivos
     const imagePath = currentImages[imageIndex];
-    if (imagePath.startsWith("/Uploads/")) {
+    if (imagePath.startsWith("/uploads/")) {
       const filePath = path.resolve(
         __dirname,
         "..",
         "..",
-        "Uploads",
+        "uploads",
         path.basename(imagePath)
       );
       try {

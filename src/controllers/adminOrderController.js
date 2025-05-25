@@ -197,7 +197,7 @@ const addAdminImages = async (req, res) => {
     const { orderId } = req.params;
     const userId = req.user.id;
     const newImages =
-      req.files?.map((file) => `/Uploads/${file.filename}`) || [];
+      req.files?.map((file) => `/uploads/${file.filename}`) || [];
     let existingImages = [];
     if (req.body.existingImages) {
       try {

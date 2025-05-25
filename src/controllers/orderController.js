@@ -328,9 +328,7 @@ const deleteOrderImage = async (req, res) => {
     }
 
     const imagePath = order.images[parseInt(imageIndex)];
-    if (!imagePath.startsWith("/uploads/")) {
-      console.warn("[orderController] Ruta de imagen inválida:", imagePath);
-    } else {
+    if (imagePath.startsWith("/uploads/")) {
       const filePath = path.resolve(
         __dirname,
         "..",
