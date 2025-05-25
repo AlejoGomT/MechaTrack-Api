@@ -114,6 +114,13 @@ CREATE TABLE public.notification_attachments (
     CONSTRAINT notification_attachments_pkey PRIMARY KEY (id)
 );
 
+CREATE TABLE IF NOT EXISTS public.notification_logs (
+  id SERIAL PRIMARY KEY,
+  event_type VARCHAR(50),
+  error_message TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE public.order_history (
     id integer NOT NULL,
     order_id character varying(10) NOT NULL,
@@ -817,9 +824,28 @@ RETURNS TRIGGER AS $$
 DECLARE
     admin_id VARCHAR(10);
     secretary_id VARCHAR(10);
+    vehicle_economic_number VARCHAR(10);
+    branch VARCHAR(50);
 BEGIN
+    -- Obtener el ID del administrador
     SELECT id INTO admin_id FROM users WHERE role = 'admin' LIMIT 1;
+    IF NOT FOUND THEN
+        RAISE NOTICE 'No se encontró un usuario con rol admin';
+    END IF;
+
+    -- Obtener el ID de la secretaria
     SELECT id INTO secretary_id FROM users WHERE role = 'secretary' LIMIT 1;
+    IF NOT FOUND THEN
+        RAISE NOTICE 'No se encontró un usuario con rol secretary';
+        -- Continuar sin notificación si no hay secretaria
+    END IF;
+
+    -- Obtener información del vehículo
+    SELECT v.economic_number, v.branch 
+    INTO vehicle_economic_number, branch
+    FROM vehicles v
+    JOIN orders o ON o.vehicle_economic_number = v.economic_number
+    WHERE o.id = NEW.id;
 
     IF NEW.status = 'Pendiente' AND OLD.status != 'Pendiente' THEN
         PERFORM create_order_closure_notification(
@@ -842,22 +868,97 @@ BEGIN
                 admin_id
             );
         END IF;
+        -- Si el estado anterior era Pendiente de Facturación, eliminar la notificación invoice_complete
+        IF OLD.status = 'Pendiente de Facturación' THEN
+            DELETE FROM notifications
+            WHERE order_id = NEW.id
+              AND type = 'invoice_complete'
+              AND status = 'Pendiente';
+            RAISE NOTICE 'Notificación invoice_complete eliminada para order_id: %', NEW.id;
+        END IF;
     ELSIF NEW.status = 'Pendiente de Facturación' AND OLD.status != 'Pendiente de Facturación' THEN
-        INSERT INTO notifications (
-            order_id, from_user_id, to_user_id, message, type, status, details, created_at
-        )
-        VALUES (
-            NEW.id,
-            admin_id,
-            secretary_id,
-            format('Orden #%s lista para facturación', NEW.id),
-            'invoice_complete',
-            'Pendiente',
-            jsonb_build_object('order_id', NEW.id),
-            CURRENT_TIMESTAMP
-        );
+        IF secretary_id IS NOT NULL THEN
+            INSERT INTO notifications (
+                order_id, 
+                from_user_id, 
+                to_user_id, 
+                message, 
+                type, 
+                status, 
+                details, 
+                created_at,
+                updated_at
+            )
+            VALUES (
+                NEW.id,
+                admin_id,
+                secretary_id,
+                format('Orden #%s lista para facturación', NEW.id),
+                'invoice_complete',
+                'Pendiente',
+                jsonb_build_object(
+                    'order_id', NEW.id,
+                    'vehicle_economic_number', vehicle_economic_number,
+                    'branch', branch
+                ),
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
+            );
+            RAISE NOTICE 'Notificación invoice_complete creada para order_id: %', NEW.id;
+        END IF;
     END IF;
     RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Función para notificar cambios en invoices
+CREATE OR REPLACE FUNCTION public.notify_invoice_changes()
+RETURNS TRIGGER AS $$
+BEGIN
+  BEGIN
+    IF (TG_OP = 'INSERT') THEN
+      PERFORM pg_notify(
+        'invoice_created',
+        json_build_object(
+          'id', NEW.id,
+          'order_id', NEW.order_id,
+          'invoice_number', NEW.invoice_number,
+          'delivery_note_number', NEW.delivery_note_number,
+          'issued_by', NEW.issued_by,
+          'issued_at', NEW.issued_at,
+          'total', NEW.total
+        )::text
+      );
+    ELSIF (TG_OP = 'UPDATE') THEN
+      PERFORM pg_notify(
+        'invoice_updated',
+        json_build_object(
+          'id', NEW.id,
+          'order_id', NEW.order_id,
+          'invoice_number', NEW.invoice_number,
+          'delivery_note_number', NEW.delivery_note_number,
+          'issued_by', NEW.issued_by,
+          'issued_at', NEW.issued_at,
+          'total', NEW.total
+        )::text
+      );
+    ELSIF (TG_OP = 'DELETE') THEN
+      PERFORM pg_notify(
+        'invoice_deleted',
+        json_build_object(
+          'id', OLD.id,
+          'order_id', OLD.order_id
+        )::text
+      );
+      RETURN OLD;
+    END IF;
+    RETURN NEW;
+  EXCEPTION WHEN OTHERS THEN
+    INSERT INTO notification_logs (event_type, error_message)
+    VALUES (TG_OP, SQLERRM);
+    RAISE NOTICE 'Error en notify_invoice_changes: %', SQLERRM;
+    RETURN NULL;
+  END;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -948,12 +1049,13 @@ CREATE INDEX idx_parts_quantity ON public.parts USING btree (id, quantity, quant
 -- Creating triggers
 DROP TRIGGER IF EXISTS order_parts_notification_trigger ON public.order_parts;
 DROP TRIGGER IF EXISTS order_parts_update_notification_trigger ON public.order_parts;
+DROP TRIGGER IF EXISTS invoice_changes_trigger ON public.invoices;
 CREATE TRIGGER notify_order_part_delete AFTER DELETE ON order_parts FOR EACH ROW EXECUTE FUNCTION notify_order_part_delete();
 CREATE TRIGGER check_single_admin_secretary BEFORE INSERT OR UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.restrict_single_admin_secretary();
 CREATE TRIGGER order_parts_notification_trigger AFTER INSERT ON public.order_parts FOR EACH ROW EXECUTE FUNCTION public.notify_order_part_insert();
 CREATE TRIGGER order_parts_update_notification_trigger AFTER UPDATE OF status, quantity ON public.order_parts FOR EACH ROW EXECUTE FUNCTION public.notify_order_part_update();
 CREATE TRIGGER order_status_notification_trigger AFTER UPDATE OF status ON public.orders FOR EACH ROW WHEN (OLD.status IS DISTINCT FROM NEW.status) EXECUTE FUNCTION public.notify_order_status_changes();
-
+CREATE TRIGGER invoice_changes_trigger AFTER INSERT OR UPDATE OR DELETE ON public.invoices FOR EACH ROW EXECUTE FUNCTION public.notify_invoice_changes();
 -- Setting sequence values
 SELECT pg_catalog.setval('public.invoices_id_seq', 13, true);
 SELECT pg_catalog.setval('public.notification_attachments_id_seq', 1, false);

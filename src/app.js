@@ -9,6 +9,7 @@ const vehicleRoutes = require("./routes/vehicleRoutes");
 const partRoutes = require("./routes/partRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const reportRoutes = require("./routes/reportRoutes");
+const invoicesRoutes = require("./routes/invoicesRoutes");
 const errorHandler = require("./utils/errorHandler");
 
 const app = express();
@@ -34,6 +35,7 @@ app.use("/api/vehicles", vehicleRoutes);
 app.use("/api/parts", partRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/reports", reportRoutes);
+app.use("/api/invoices", invoicesRoutes);
 app.use(errorHandler);
 
 module.exports = app;

@@ -1,10 +1,11 @@
 require("dotenv").config();
 const http = require("http");
 const { Server } = require("socket.io");
+const createSubscriber = require("pg-listen");
 const app = require("./app");
 const config = require("./config/config");
 const jwt = require("jsonwebtoken");
-const socket = require("./socket"); // Importar socket.js
+const socket = require("./socket");
 const notificationService = require("./services/notificationService");
 
 // Crear servidor HTTP
@@ -25,6 +26,66 @@ socket.init(io);
 
 // Hacer que io esté disponible en los controladores
 app.set("io", socket.getIo());
+
+// Función para crear y conectar un nuevo subscriber
+const setupSubscriber = async () => {
+  const subscriber = createSubscriber({
+    user: config.db.user,
+    host: config.db.host,
+    database: config.db.database,
+    password: config.db.password,
+    port: config.db.port,
+    ssl:
+      process.env.NODE_ENV === "production"
+        ? { rejectUnauthorized: false }
+        : false,
+  });
+
+  subscriber.events.on("error", (error) => {
+    console.error("[index] Error en pg-listen:", error.message);
+  });
+
+  try {
+    await subscriber.connect();
+    await subscriber.listenTo("invoice_created");
+    await subscriber.listenTo("invoice_updated");
+    await subscriber.listenTo("invoice_deleted");
+
+    subscriber.notifications.on("invoice_created", (payload) => {
+      io.to("secretary").emit("invoice_created", payload);
+      console.log(
+        "[index] Emitiendo invoice_created a sala secretary:",
+        payload
+      );
+    });
+
+    subscriber.notifications.on("invoice_updated", (payload) => {
+      io.to("secretary").emit("invoice_updated", payload);
+      console.log(
+        "[index] Emitiendo invoice_updated a sala secretary:",
+        payload
+      );
+    });
+
+    subscriber.notifications.on("invoice_deleted", (payload) => {
+      io.to("secretary").emit("invoice_deleted", payload);
+      console.log(
+        "[index] Emitiendo invoice_deleted a sala secretary:",
+        payload
+      );
+    });
+
+    console.log("[index] pg-listen conectado y escuchando notificaciones");
+  } catch (error) {
+    console.error("[index] Error conectando a pg-listen:", error.message);
+    console.error("[index] Reintentando en 5 segundos...");
+    await subscriber.close(); // Cerrar el subscriber antes de reintentar
+    setTimeout(setupSubscriber, 5000);
+  }
+};
+
+// Iniciar el subscriber
+setupSubscriber();
 
 // Autenticación de Socket.IO con JWT
 io.use((socket, next) => {
@@ -101,7 +162,7 @@ io.on("connection", (socket) => {
 });
 
 // Exportar server para usarlo en otros módulos
-module.exports = { server, io }; // Mantener io por compatibilidad, pero socket.js es la fuente principal
+module.exports = { server, io };
 
 // Iniciar el servidor
 server.listen(config.port, () => {

@@ -704,16 +704,6 @@ const updateOrderStatus = async (id, status) => {
       );
       throw { status: 400, message: `La orden ya está en estado ${status}` };
     }
-    if (order.status === "Finalizado" && status !== "Finalizado") {
-      console.error(
-        "[ORDER_SERVICE] Intento de cambiar estado de orden finalizada para id:",
-        id
-      );
-      throw {
-        status: 400,
-        message: "No se puede cambiar una orden finalizada",
-      };
-    }
 
     // Actualizar el estado de la orden
     const query = `
