@@ -14,6 +14,7 @@ const generateUserId = async () => {
 };
 
 const getUsers = async ({
+  userId,
   name,
   role,
   page = 1,
@@ -22,18 +23,24 @@ const getUsers = async ({
 }) => {
   try {
     let query =
-      "SELECT id, first_name, last_name, email, role, password FROM users WHERE 1=1";
+      "SELECT id, first_name, last_name, email, role FROM users WHERE 1=1";
     const values = [];
     let paramIndex = 1;
 
+    if (userId) {
+      query += ` AND id = $${paramIndex}`;
+      values.push(userId);
+      paramIndex++;
+    }
     if (name && name.trim()) {
       query += ` AND (first_name ILIKE $${paramIndex} OR last_name ILIKE $${paramIndex})`;
       values.push(`%${name.trim()}%`);
       paramIndex++;
     }
     if (role && role.trim()) {
-      query += ` AND role = $${paramIndex}`;
-      values.push(role.trim());
+      const roles = role.split(",");
+      query += ` AND role = ANY($${paramIndex})`;
+      values.push(roles);
       paramIndex++;
     }
     if (excludeAdmin) {
@@ -41,13 +48,12 @@ const getUsers = async ({
     }
 
     const countValues = [...values];
-
     const offset = (page - 1) * limit;
     query += ` ORDER BY id ASC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     values.push(limit, offset);
     const countQuery = query
       .replace(
-        "SELECT id, first_name, last_name, email, role, password",
+        "SELECT id, first_name, last_name, email, role",
         "SELECT COUNT(*)"
       )
       .replace(/ORDER BY id ASC LIMIT \$\d+ OFFSET \$\d+/, "");
@@ -167,10 +173,26 @@ const getUserById = async (userId) => {
   }
 };
 
+const getUserByRole = async (role) => {
+  try {
+    const result = await pool.query(
+      "SELECT id, first_name, last_name, email, role FROM users WHERE role = $1 LIMIT 1",
+      [role]
+    );
+    if (result.rows.length === 0) {
+      throw new Error(`No se encontró usuario con rol ${role}`);
+    }
+    return result.rows[0];
+  } catch (error) {
+    throw new Error(`Error al obtener usuario por rol: ${error.message}`);
+  }
+};
+
 module.exports = {
   getUsers,
   createUser,
   updateUser,
   deleteUser,
   getUserById,
+  getUserByRole,
 };

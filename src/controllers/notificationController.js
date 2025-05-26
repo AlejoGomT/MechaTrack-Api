@@ -146,27 +146,17 @@ const getConversations = async (req, res) => {
   }
   try {
     const query = `
-      SELECT DISTINCT
-        c.order_id,
+      SELECT 
+        c.conversation_id,
         c.vehicle_economic_number,
         c.order_status,
         c.last_message_at,
         c.total_messages,
-        COUNT(CASE WHEN n.status = 'Pendiente' AND n.to_user_id = $1 THEN 1 END) AS unread_messages,
+        c.unread_messages,
         c.senders,
         c.recipients
       FROM conversations c
-      JOIN notifications n ON c.order_id = n.order_id
-      WHERE (n.to_user_id = $1 OR n.from_user_id = $1)
-        AND c.order_status IN ('En Proceso', 'Pendiente')
-      GROUP BY 
-        c.order_id,
-        c.vehicle_economic_number,
-        c.order_status,
-        c.last_message_at,
-        c.total_messages,
-        c.senders,
-        c.recipients
+      WHERE $1 IN (c.senders, c.recipients)
       ORDER BY c.last_message_at DESC
     `;
     const result = await pool.query(query, [user_id]);

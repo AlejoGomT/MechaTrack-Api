@@ -52,10 +52,21 @@ const getUserById = async (req, res, next) => {
   }
 };
 
+const getUserByRole = async (req, res, next) => {
+  try {
+    const { role } = req.params;
+    const user = await userService.getUserByRole(role);
+    res.json(user);
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getUsers,
   createUser,
   updateUser,
   deleteUser,
   getUserById,
+  getUserByRole,
 };

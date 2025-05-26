@@ -818,7 +818,6 @@ BEGIN
 END;
 $$;
 
--- Actualizar la función notify_order_status_changes para usar create_order_closure_notification
 CREATE OR REPLACE FUNCTION public.notify_order_status_changes()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -879,13 +878,14 @@ DECLARE
   admin_id VARCHAR(10);
   secretary_id VARCHAR(10);
   existing_notification RECORD;
+  order_status VARCHAR(50);
 BEGIN
   BEGIN
     -- Obtener IDs de admin y secretary
     SELECT id INTO admin_id FROM users WHERE role = 'admin' LIMIT 1;
     SELECT id INTO secretary_id FROM users WHERE role = 'secretary' LIMIT 1;
 
-    IF (TG_OP = 'INSERT' OR TG_OP = 'UPDATE') THEN
+    IF TG_OP = 'INSERT' THEN
       -- Actualizar el estado de la orden a Facturado
       UPDATE orders
       SET status = 'Facturado',
@@ -894,7 +894,7 @@ BEGIN
 
       -- Enviar notificación de canal
       PERFORM pg_notify(
-        'invoice_updated',
+        'invoice_complete',
         json_build_object(
           'id', NEW.id,
           'order_id', NEW.order_id,
@@ -921,6 +921,7 @@ BEGIN
             message = format('Factura ingresada para la orden #%s', NEW.order_id),
             from_user_id = NEW.issued_by,
             to_user_id = admin_id,
+            status = 'Pendiente',
             details = jsonb_build_object(
               'invoice_id', NEW.id,
               'invoice_number', NEW.invoice_number,
@@ -959,71 +960,144 @@ BEGIN
         END IF;
       END IF;
 
-    ELSIF (TG_OP = 'DELETE') THEN
+    ELSIF TG_OP = 'UPDATE' THEN
+      -- Verificar el estado de la orden
+      SELECT status INTO order_status
+      FROM orders
+      WHERE id = NEW.order_id;
 
-      -- Enviar notificación de canal
-      PERFORM pg_notify(
-        'invoice_deleted',
-        json_build_object(
-          'id', OLD.id,
-          'order_id', OLD.order_id
-        )::text
-      );
+      IF NEW.invoice_number IS NOT NULL AND OLD.invoice_number IS NOT NULL THEN        
+        -- Enviar notificación de canal
+        PERFORM pg_notify(
+          'invoice_complete',
+          json_build_object(
+            'id', NEW.id,
+            'order_id', NEW.order_id,
+            'invoice_number', NEW.invoice_number,
+            'delivery_note_number', NEW.delivery_note_number,
+            'issued_by', NEW.issued_by,
+            'issued_at', NEW.issued_at,
+            'total', NEW.total
+          )::text
+        );
 
-      IF secretary_id IS NOT NULL THEN
-        -- Buscar notificación invoice_complete existente
-        SELECT * INTO existing_notification
-        FROM notifications
-        WHERE order_id = OLD.order_id
+        IF secretary_id IS NOT NULL THEN
+          -- Buscar notificación invoice_complete existente
+          SELECT * INTO existing_notification
+          FROM notifications
+          WHERE order_id = NEW.order_id
           AND type = 'invoice_complete'
-        LIMIT 1;
+          LIMIT 1;
 
-        IF FOUND THEN
-          -- Actualizar notificación existente
-          UPDATE notifications
-          SET
-            message = format('Orden #%s lista para facturación', OLD.order_id),
-            from_user_id = admin_id,
-            to_user_id = secretary_id,
-            status = 'Pendiente',
-            details = jsonb_build_object(
-              'order_id', OLD.order_id,
-              'vehicle_economic_number', (SELECT vehicle_economic_number FROM orders WHERE id = OLD.order_id),
-              'branch', (SELECT branch FROM vehicles WHERE economic_number = (SELECT vehicle_economic_number FROM orders WHERE id = OLD.order_id))
-            ),
-            updated_at = CURRENT_TIMESTAMP
-          WHERE id = existing_notification.id;
-        ELSE
-          -- Crear nueva notificación
-          INSERT INTO notifications (
-            order_id,
-            from_user_id,
-            to_user_id,
-            message,
-            type,
-            status,
-            details,
-            created_at,
-            updated_at
-          )
-          VALUES (
-            OLD.order_id,
-            admin_id,
-            secretary_id,
-            format('Orden #%s lista para facturación', OLD.order_id),
-            'invoice_complete',
-            'Pendiente',
-            jsonb_build_object(
-              'order_id', OLD.order_id,
-              'vehicle_economic_number', (SELECT vehicle_economic_number FROM orders WHERE id = OLD.order_id),
-              'branch', (SELECT branch FROM vehicles WHERE economic_number = (SELECT vehicle_economic_number FROM orders WHERE id = OLD.order_id))
-            ),
-            CURRENT_TIMESTAMP,
-            CURRENT_TIMESTAMP
-          );
+          IF FOUND THEN
+            -- Actualizar notificación existente
+            UPDATE notifications
+            SET
+              message = format('Factura ingresada para la orden #%s', NEW.order_id),
+              from_user_id = NEW.issued_by,
+              to_user_id = admin_id,
+              status = 'Pendiente',
+              details = jsonb_build_object(
+                'invoice_id', NEW.id,
+                'invoice_number', NEW.invoice_number,
+                'order_id', NEW.order_id
+              ),
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = existing_notification.id;
+          ELSE
+            -- Crear nueva notificación
+            INSERT INTO notifications (
+              order_id,
+              from_user_id,
+              to_user_id,
+              message,
+              type,
+              status,
+              details,
+              created_at,
+              updated_at
+            )
+            VALUES (
+              NEW.order_id,
+              NEW.issued_by,
+              admin_id,
+              format('Factura ingresada para la orden #%s', NEW.order_id),
+              'invoice_complete',
+              'Pendiente',
+              jsonb_build_object(
+                'invoice_id', NEW.id,
+                'invoice_number', NEW.invoice_number,
+                'order_id', NEW.order_id
+              ),
+              CURRENT_TIMESTAMP,
+              CURRENT_TIMESTAMP
+            );
+          END IF;
+        END IF;
+
+      ELSIF NEW.invoice_number IS NULL AND OLD.invoice_number IS NOT NULL THEN
+        PERFORM pg_notify(
+          'invoice_complete',
+          json_build_object(
+            'id', OLD.id,
+            'order_id', OLD.order_id
+          )::text
+        );
+
+        IF secretary_id IS NOT NULL THEN
+          -- Buscar notificación invoice_complete existente
+          SELECT * INTO existing_notification
+          FROM notifications
+          WHERE order_id = OLD.order_id
+          AND type = 'invoice_complete'
+          LIMIT 1;
+
+          IF FOUND THEN
+            -- Actualizar notificación existente
+            UPDATE notifications
+            SET
+              message = format('Orden #%s lista para facturación', OLD.order_id),
+              from_user_id = admin_id,
+              to_user_id = secretary_id,
+              status = 'Pendiente',
+              details = jsonb_build_object(
+                'order_id', OLD.order_id,
+                'vehicle_economic_number', (SELECT vehicle_economic_number FROM orders WHERE id = OLD.order_id),
+                'branch', (SELECT branch FROM vehicles WHERE economic_number = (SELECT vehicle_economic_number FROM orders WHERE id = OLD.order_id))
+              ),
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = existing_notification.id;
+          ELSE
+            -- Crear nueva notificación
+            INSERT INTO notifications (
+              order_id,
+              from_user_id,
+              to_user_id,
+              message,
+              type,
+              status,
+              details,
+              created_at,
+              updated_at
+            )
+            VALUES (
+              OLD.order_id,
+              admin_id,
+              secretary_id,
+              format('Orden #%s lista para facturación', OLD.order_id),
+              'invoice_complete',
+              'Pendiente',
+              jsonb_build_object(
+                'order_id', OLD.order_id,
+                'vehicle_economic_number', (SELECT vehicle_economic_number FROM orders WHERE id = OLD.order_id),
+                'branch', (SELECT branch FROM vehicles WHERE economic_number = (SELECT vehicle_economic_number FROM orders WHERE id = OLD.order_id))
+              ),
+              CURRENT_TIMESTAMP,
+              CURRENT_TIMESTAMP
+            );
+          END IF;
         END IF;
       END IF;
-      RETURN OLD;
     END IF;
     RETURN NEW;
   EXCEPTION WHEN OTHERS THEN
@@ -1062,20 +1136,28 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Creating view
-CREATE VIEW public.conversations AS
- SELECT n.order_id,
-    o.vehicle_economic_number,
-    o.status AS order_status,
-    max(n.created_at) AS last_message_at,
-    count(n.id) AS total_messages,
-    count(CASE WHEN n.status = 'Pendiente' THEN 1 ELSE NULL::integer END) AS unread_messages,
-    string_agg(DISTINCT (u_from.first_name || ' ' || u_from.last_name), ', ') AS senders,
-    string_agg(DISTINCT (u_to.first_name || ' ' || u_to.last_name), ', ') AS recipients
-   FROM public.notifications n
-     JOIN public.orders o ON (n.order_id = o.id)
-     JOIN public.users u_from ON (n.from_user_id = u_from.id)
-     JOIN public.users u_to ON (n.to_user_id = u_to.id)
-  GROUP BY n.order_id, o.vehicle_economic_number, o.status;
+CREATE OR REPLACE VIEW conversations AS
+SELECT
+  COALESCE(n.order_id, 'DIRECT') AS conversation_id,
+  o.vehicle_economic_number,
+  o.status AS order_status,
+  MAX(n.created_at) AS last_message_at,
+  COUNT(n.id) AS total_messages,
+  COUNT(n.id) FILTER (WHERE n.status = 'Pendiente' AND n.to_user_id = u.id) AS unread_messages,
+  STRING_AGG(DISTINCT u_from.first_name || ' ' || u_from.last_name, ', ') AS senders,
+  STRING_AGG(DISTINCT u_to.first_name || ' ' || u_to.last_name, ', ') AS recipients
+FROM notifications n
+LEFT JOIN orders o ON n.order_id = o.id
+LEFT JOIN users u_from ON n.from_user_id = u_from.id
+LEFT JOIN users u_to ON n.to_user_id = u_to.id
+LEFT JOIN users u ON u.id IN (n.from_user_id, n.to_user_id)
+WHERE n.type IN (
+  'message', 'direct_message', 'part_request', 'closure_request',
+  'part_approval', 'part_rejection', 'closure_approval', 'closure_rejection',
+  'client_update', 'invoice_complete', 'part_return_request', 'order_creation'
+)
+GROUP BY COALESCE(n.order_id, 'DIRECT'), o.vehicle_economic_number, o.status, u.id
+HAVING COUNT(n.id) > 0;
 
 -- Creating foreign key constraints
 ALTER TABLE ONLY public.invoices

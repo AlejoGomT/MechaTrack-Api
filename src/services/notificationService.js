@@ -18,12 +18,27 @@ const getNotifications = async ({ to_user_id, status, order_id, user_id }) => {
     const values = [];
     let paramIndex = 1;
 
-    if (order_id) {
-      query += ` AND n.order_id = $${paramIndex}`;
-      values.push(order_id);
-      paramIndex++;
+    if (order_id && order_id !== "todos") {
+      if (order_id === "DIRECT") {
+        query += ` AND n.order_id IS NULL AND n.type = 'direct_message'`;
+        if (to_user_id && user_id) {
+          query += ` AND ((n.from_user_id = $${paramIndex} AND n.to_user_id = $${
+            paramIndex + 1
+          }) OR (n.from_user_id = $${
+            paramIndex + 1
+          } AND n.to_user_id = $${paramIndex}))`;
+          values.push(user_id, to_user_id);
+          paramIndex += 2;
+        }
+      } else {
+        query += ` AND n.order_id = $${paramIndex}`;
+        values.push(order_id);
+        paramIndex++;
+      }
+    } else {
       query += ` AND n.type IN (
-        'message',
+        'message', 
+        'direct_message',
         'part_request',
         'closure_request',
         'part_approval',
@@ -35,16 +50,19 @@ const getNotifications = async ({ to_user_id, status, order_id, user_id }) => {
         'part_return_request',
         'order_creation'
       )`;
-    }
-    if (user_id) {
-      query += ` AND (n.to_user_id = $${paramIndex} OR n.from_user_id = $${paramIndex})`;
-      values.push(user_id);
-      paramIndex++;
-    }
-    if (to_user_id) {
-      query += ` AND n.to_user_id = $${paramIndex}`;
-      values.push(to_user_id);
-      paramIndex++;
+      if (to_user_id && user_id) {
+        query += ` AND ((n.from_user_id = $${paramIndex} AND n.to_user_id = $${
+          paramIndex + 1
+        }) OR (n.from_user_id = $${
+          paramIndex + 1
+        } AND n.to_user_id = $${paramIndex}))`;
+        values.push(user_id, to_user_id);
+        paramIndex += 2;
+      } else if (user_id) {
+        query += ` AND (n.to_user_id = $${paramIndex} OR n.from_user_id = $${paramIndex})`;
+        values.push(user_id);
+        paramIndex++;
+      }
     }
     if (status) {
       query += ` AND n.status = $${paramIndex}`;
@@ -126,7 +144,7 @@ const createNotification = async (notificationData, client = null) => {
     RETURNING *
   `;
   const values = [
-    order_id,
+    type === "direct_message" ? null : order_id || null,
     from_user_id,
     to_user_id,
     message,
@@ -145,7 +163,6 @@ const createNotification = async (notificationData, client = null) => {
     const notification = result.rows[0];
     console.log("[notificationService] Notificación insertada:", notification);
 
-    // Enviar notificación por Socket.IO solo si io está disponible
     const socketNotification = {
       id: notification.id,
       orderId: notification.order_id,
@@ -160,16 +177,15 @@ const createNotification = async (notificationData, client = null) => {
 
     const io = socket.getIo();
     if (io && typeof io.to === "function") {
-      // Emitir a la sala de la orden
-      io.to(`order_${order_id}`).emit("notification", socketNotification);
-      console.log(
-        "[notificationService] Notificación emitida a order_",
-        order_id,
-        ":",
-        socketNotification
-      );
-
-      // Emitir a usuarios y roles específicos
+      if (notification.order_id) {
+        io.to(`order_${order_id}`).emit("notification", socketNotification);
+        console.log(
+          "[notificationService] Notificación emitida a order_",
+          order_id,
+          ":",
+          socketNotification
+        );
+      }
       if (to_user_id) {
         io.to(to_user_id).emit("notification", socketNotification);
         console.log(
@@ -185,6 +201,13 @@ const createNotification = async (notificationData, client = null) => {
         io.to("secretary").emit("notification", socketNotification);
         console.log(
           "[notificationService] Notificación emitida a rol: secretary"
+        );
+      }
+      if (type === "direct_message") {
+        io.to(from_user_id).emit("notification", socketNotification);
+        console.log(
+          "[notificationService] Notificación directa emitida a remitente:",
+          from_user_id
         );
       }
     } else {
