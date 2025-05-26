@@ -15,9 +15,11 @@ const getOrders = async (
 ) => {
   let query = `
     SELECT o.*, v.branch, v.plate, v.brand, v.model, v.year, v.mileage, 
+           i.invoice_number, i.delivery_note_number, i.total AS invoice_total,
            COUNT(*) OVER() as total_count 
     FROM orders o 
     LEFT JOIN vehicles v ON o.vehicle_economic_number = v.economic_number 
+    LEFT JOIN invoices i ON o.id = i.order_id
     WHERE 1=1
   `;
   const values = [];
@@ -59,10 +61,22 @@ const getOrders = async (
     console.log("[ORDER_SERVICE] Órdenes obtenidas:", result.rows.length);
     const total =
       result.rows.length > 0 ? parseInt(result.rows[0].total_count, 10) : 0;
+    const orders = result.rows.map((order) => ({
+      ...order,
+      invoice: order.invoice_number
+        ? {
+            invoice_number: order.invoice_number,
+            delivery_note_number: order.delivery_note_number,
+            total: order.invoice_total,
+          }
+        : null,
+    }));
     return {
-      orders: result.rows,
+      orders,
       total,
       totalPages: Math.ceil(total / limit),
+      page,
+      limit,
     };
   } catch (err) {
     console.error("[ORDER_SERVICE] Error al obtener órdenes:", err);

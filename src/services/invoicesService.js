@@ -111,12 +111,21 @@ const getInvoices = async ({
 
 const editInvoiceNumber = async (orderId, { invoice_number, issued_by }) => {
   try {
+    const totalQuery = await pool.query(
+      `SELECT SUM(quantity * price) AS total
+       FROM order_parts
+       WHERE order_id = $1`,
+      [orderId]
+    );
+
+    const total = totalQuery.rows[0]?.total || 0;
+
     const result = await pool.query(
       `UPDATE invoices
-      SET invoice_number = $1, issued_by = $2, issued_at = CURRENT_TIMESTAMP
-      WHERE order_id = $3
-      RETURNING *`,
-      [(invoice_number, issued_by, orderId)]
+       SET invoice_number = $1, issued_by = $2, issued_at = CURRENT_TIMESTAMP, total = $3
+       WHERE order_id = $4
+       RETURNING *`,
+      [invoice_number, issued_by, total, orderId]
     );
 
     if (!result.rows.length) {
@@ -133,9 +142,8 @@ const editInvoiceNumber = async (orderId, { invoice_number, issued_by }) => {
 const deleteInvoice = async (orderId) => {
   try {
     const result = await pool.query(
-      `DELETE FROM invoices
-        WHERE order_id = $1
-        RETURNING *`,
+      `UPDATE invoices SET invoice_number = NULL, issued_by = NULL, issued_at = NULL, total = NULL 
+      WHERE order_id = $1 RETURNING *`,
       [orderId]
     );
 

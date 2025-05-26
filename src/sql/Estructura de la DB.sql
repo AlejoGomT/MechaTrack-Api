@@ -823,7 +823,7 @@ CREATE OR REPLACE FUNCTION public.notify_order_status_changes()
 RETURNS TRIGGER AS $$
 DECLARE
     admin_id VARCHAR(10);
-    secretary_id VARCHAR(10);
+    v_technician_id VARCHAR(10);
     vehicle_economic_number VARCHAR(10);
     branch VARCHAR(50);
 BEGIN
@@ -833,11 +833,10 @@ BEGIN
         RAISE NOTICE 'No se encontró un usuario con rol admin';
     END IF;
 
-    -- Obtener el ID de la secretaria
-    SELECT id INTO secretary_id FROM users WHERE role = 'secretary' LIMIT 1;
+    -- Obtener el ID del técnico
+    SELECT technician_id INTO v_technician_id FROM orders WHERE id = NEW.id;
     IF NOT FOUND THEN
-        RAISE NOTICE 'No se encontró un usuario con rol secretary';
-        -- Continuar sin notificación si no hay secretaria
+        RAISE NOTICE 'No se encontró técnico para la orden %', NEW.id;
     END IF;
 
     -- Obtener información del vehículo
@@ -868,44 +867,6 @@ BEGIN
                 admin_id
             );
         END IF;
-        -- Si el estado anterior era Pendiente de Facturación, eliminar la notificación invoice_complete
-        IF OLD.status = 'Pendiente de Facturación' THEN
-            DELETE FROM notifications
-            WHERE order_id = NEW.id
-              AND type = 'invoice_complete'
-              AND status = 'Pendiente';
-            RAISE NOTICE 'Notificación invoice_complete eliminada para order_id: %', NEW.id;
-        END IF;
-    ELSIF NEW.status = 'Pendiente de Facturación' AND OLD.status != 'Pendiente de Facturación' THEN
-        IF secretary_id IS NOT NULL THEN
-            INSERT INTO notifications (
-                order_id, 
-                from_user_id, 
-                to_user_id, 
-                message, 
-                type, 
-                status, 
-                details, 
-                created_at,
-                updated_at
-            )
-            VALUES (
-                NEW.id,
-                admin_id,
-                secretary_id,
-                format('Orden #%s lista para facturación', NEW.id),
-                'invoice_complete',
-                'Pendiente',
-                jsonb_build_object(
-                    'order_id', NEW.id,
-                    'vehicle_economic_number', vehicle_economic_number,
-                    'branch', branch
-                ),
-                CURRENT_TIMESTAMP,
-                CURRENT_TIMESTAMP
-            );
-            RAISE NOTICE 'Notificación invoice_complete creada para order_id: %', NEW.id;
-        END IF;
     END IF;
     RETURN NEW;
 END;
@@ -917,26 +878,21 @@ RETURNS TRIGGER AS $$
 DECLARE
   admin_id VARCHAR(10);
   secretary_id VARCHAR(10);
+  existing_notification RECORD;
 BEGIN
   BEGIN
     -- Obtener IDs de admin y secretary
     SELECT id INTO admin_id FROM users WHERE role = 'admin' LIMIT 1;
     SELECT id INTO secretary_id FROM users WHERE role = 'secretary' LIMIT 1;
 
-    IF (TG_OP = 'INSERT') THEN
-      PERFORM pg_notify(
-        'invoice_created',
-        json_build_object(
-          'id', NEW.id,
-          'order_id', NEW.order_id,
-          'invoice_number', NEW.invoice_number,
-          'delivery_note_number', NEW.delivery_note_number,
-          'issued_by', NEW.issued_by,
-          'issued_at', NEW.issued_at,
-          'total', NEW.total
-        )::text
-      );
-    ELSIF (TG_OP = 'UPDATE') THEN
+    IF (TG_OP = 'INSERT' OR TG_OP = 'UPDATE') THEN
+      -- Actualizar el estado de la orden a Facturado
+      UPDATE orders
+      SET status = 'Facturado',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = NEW.order_id;
+
+      -- Enviar notificación de canal
       PERFORM pg_notify(
         'invoice_updated',
         json_build_object(
@@ -949,35 +905,63 @@ BEGIN
           'total', NEW.total
         )::text
       );
+
       IF secretary_id IS NOT NULL THEN
-        INSERT INTO notifications (
-          order_id,
-          from_user_id,
-          to_user_id,
-          message,
-          type,
-          status,
-          details,
-          created_at,
-          updated_at
-        )
-        VALUES (
-          NEW.order_id,
-          admin_id,
-          secretary_id,
-          format('Se actualizó el número de factura %s para la orden #%s', NEW.invoice_number, NEW.order_id),
-          'invoice_updated',
-          'Pendiente',
-          jsonb_build_object(
-            'invoice_id', NEW.id,
-            'invoice_number', NEW.invoice_number,
-            'order_id', NEW.order_id
-          ),
-          CURRENT_TIMESTAMP,
-          CURRENT_TIMESTAMP
-        );
+        -- Buscar notificación invoice_complete existente
+        SELECT * INTO existing_notification
+        FROM notifications
+        WHERE order_id = NEW.order_id
+        AND type = 'invoice_complete'
+        LIMIT 1;
+
+        IF FOUND THEN
+          -- Actualizar notificación existente
+          UPDATE notifications
+          SET
+            message = format('Factura ingresada para la orden #%s', NEW.order_id),
+            from_user_id = NEW.issued_by,
+            to_user_id = admin_id,
+            details = jsonb_build_object(
+              'invoice_id', NEW.id,
+              'invoice_number', NEW.invoice_number,
+              'order_id', NEW.order_id
+            ),
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = existing_notification.id;
+        ELSE
+          -- Crear nueva notificación
+          INSERT INTO notifications (
+            order_id,
+            from_user_id,
+            to_user_id,
+            message,
+            type,
+            status,
+            details,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            NEW.order_id,
+            NEW.issued_by,
+            admin_id,
+            format('Factura ingresada para la orden #%s', NEW.order_id),
+            'invoice_complete',
+            'Pendiente',
+            jsonb_build_object(
+              'invoice_id', NEW.id,
+              'invoice_number', NEW.invoice_number,
+              'order_id', NEW.order_id
+            ),
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
+          );
+        END IF;
       END IF;
+
     ELSIF (TG_OP = 'DELETE') THEN
+
+      -- Enviar notificación de canal
       PERFORM pg_notify(
         'invoice_deleted',
         json_build_object(
@@ -985,32 +969,59 @@ BEGIN
           'order_id', OLD.order_id
         )::text
       );
+
       IF secretary_id IS NOT NULL THEN
-        INSERT INTO notifications (
-          order_id,
-          from_user_id,
-          to_user_id,
-          message,
-          type,
-          status,
-          details,
-          created_at,
-          updated_at
-        )
-        VALUES (
-          OLD.order_id,
-          admin_id,
-          secretary_id,
-          format('Se eliminó la factura de la orden #%s', OLD.order_id),
-          'invoice_deleted',
-          'Pendiente',
-          jsonb_build_object(
-            'invoice_id', OLD.id,
-            'order_id', OLD.order_id
-          ),
-          CURRENT_TIMESTAMP,
-          CURRENT_TIMESTAMP
-        );
+        -- Buscar notificación invoice_complete existente
+        SELECT * INTO existing_notification
+        FROM notifications
+        WHERE order_id = OLD.order_id
+          AND type = 'invoice_complete'
+        LIMIT 1;
+
+        IF FOUND THEN
+          -- Actualizar notificación existente
+          UPDATE notifications
+          SET
+            message = format('Orden #%s lista para facturación', OLD.order_id),
+            from_user_id = admin_id,
+            to_user_id = secretary_id,
+            status = 'Pendiente',
+            details = jsonb_build_object(
+              'order_id', OLD.order_id,
+              'vehicle_economic_number', (SELECT vehicle_economic_number FROM orders WHERE id = OLD.order_id),
+              'branch', (SELECT branch FROM vehicles WHERE economic_number = (SELECT vehicle_economic_number FROM orders WHERE id = OLD.order_id))
+            ),
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = existing_notification.id;
+        ELSE
+          -- Crear nueva notificación
+          INSERT INTO notifications (
+            order_id,
+            from_user_id,
+            to_user_id,
+            message,
+            type,
+            status,
+            details,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            OLD.order_id,
+            admin_id,
+            secretary_id,
+            format('Orden #%s lista para facturación', OLD.order_id),
+            'invoice_complete',
+            'Pendiente',
+            jsonb_build_object(
+              'order_id', OLD.order_id,
+              'vehicle_economic_number', (SELECT vehicle_economic_number FROM orders WHERE id = OLD.order_id),
+              'branch', (SELECT branch FROM vehicles WHERE economic_number = (SELECT vehicle_economic_number FROM orders WHERE id = OLD.order_id))
+            ),
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP
+          );
+        END IF;
       END IF;
       RETURN OLD;
     END IF;
