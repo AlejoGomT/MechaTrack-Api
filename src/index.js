@@ -8,7 +8,6 @@ const jwt = require("jsonwebtoken");
 const socket = require("./socket");
 const notificationService = require("./services/notificationService");
 
-// Crear servidor HTTP
 const server = http.createServer(app);
 
 const io = new Server(server, {
@@ -21,13 +20,9 @@ const io = new Server(server, {
   allowEIO3: true,
 });
 
-// Inicializar io en socket.js
 socket.init(io);
-
-// Hacer que io esté disponible en los controladores
 app.set("io", socket.getIo());
 
-// Función para crear y conectar un nuevo subscriber
 const setupSubscriber = async () => {
   const subscriber = createSubscriber({
     user: config.db.user,
@@ -79,15 +74,13 @@ const setupSubscriber = async () => {
   } catch (error) {
     console.error("[index] Error conectando a pg-listen:", error.message);
     console.error("[index] Reintentando en 5 segundos...");
-    await subscriber.close(); // Cerrar el subscriber antes de reintentar
+    await subscriber.close();
     setTimeout(setupSubscriber, 5000);
   }
 };
 
-// Iniciar el subscriber
 setupSubscriber();
 
-// Autenticación de Socket.IO con JWT
 io.use((socket, next) => {
   const token = socket.handshake.query.token;
   if (!token) {
@@ -103,28 +96,36 @@ io.use((socket, next) => {
   }
 });
 
-// Mapa para almacenar conexiones de usuarios
 const clients = new Map();
 
-// Manejo de conexiones Socket.IO
 io.on("connection", (socket) => {
   console.log(`Usuario ${socket.userId} conectado (Rol: ${socket.role})`);
 
-  // Unir al usuario a sus salas
   socket.join(socket.userId);
   socket.join(socket.role);
   clients.set(socket.userId, socket);
 
-  // Manejar unión a salas de órdenes
   socket.on("joinOrder", (orderId) => {
     socket.join(`order_${orderId}`);
     console.log(`[Socket] Usuario ${socket.userId} se unió a order_${orderId}`);
   });
 
-  // Enviar mensaje de bienvenida
+  socket.on("join", (room) => {
+    socket.join(room);
+    console.log(`[Socket] Usuario ${socket.userId} se unió a ${room}`);
+  });
+
+  socket.on("typing", ({ room, isTyping }) => {
+    socket.to(room).emit("typing", { userId: socket.userId, room, isTyping });
+    console.log(
+      `[Socket] Usuario ${socket.userId} ${
+        isTyping ? "está escribiendo" : "dejó de escribir"
+      } en ${room}`
+    );
+  });
+
   socket.emit("welcome", `Bienvenido, usuario ${socket.userId}`);
 
-  // Manejar mensajes directos
   socket.on(
     "message",
     async ({ toUserId, orderId, message, type = "message" }) => {
@@ -149,22 +150,18 @@ io.on("connection", (socket) => {
     }
   );
 
-  // Manejar desconexión
   socket.on("disconnect", () => {
     clients.delete(socket.userId);
     console.log(`Usuario ${socket.userId} desconectado`);
   });
 
-  // Manejar errores
   socket.on("error", (error) => {
     console.error(`Error en Socket.IO para usuario ${socket.userId}:`, error);
   });
 });
 
-// Exportar server para usarlo en otros módulos
 module.exports = { server, io };
 
-// Iniciar el servidor
 server.listen(config.port, () => {
   console.log(`Servidor corriendo en http://localhost:${config.port}`);
 });

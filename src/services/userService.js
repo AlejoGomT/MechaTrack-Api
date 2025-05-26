@@ -1,7 +1,6 @@
 const pool = require("../config/database");
 const bcrypt = require("bcrypt");
 
-// Generar ID autoincremental (U001, U002, etc.)
 const generateUserId = async () => {
   const result = await pool.query(
     "SELECT id FROM users ORDER BY id DESC LIMIT 1"
@@ -14,7 +13,6 @@ const generateUserId = async () => {
   return `U${number.toString().padStart(3, "0")}`;
 };
 
-// Obtener todos los usuarios (excepto el admin para ciertos casos)
 const getUsers = async ({
   name,
   role,
@@ -42,27 +40,17 @@ const getUsers = async ({
       query += ` AND role != 'admin'`;
     }
 
-    // Guardar los parámetros hasta este punto para la consulta de conteo
     const countValues = [...values];
 
     const offset = (page - 1) * limit;
     query += ` ORDER BY id ASC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
     values.push(limit, offset);
-
-    // Depuración
-    console.log("Consulta principal SQL:", query);
-    console.log("Parámetros principal:", values);
-
-    // Consulta de conteo sin LIMIT ni OFFSET
     const countQuery = query
       .replace(
         "SELECT id, first_name, last_name, email, role, password",
         "SELECT COUNT(*)"
       )
       .replace(/ORDER BY id ASC LIMIT \$\d+ OFFSET \$\d+/, "");
-
-    console.log("Consulta de conteo SQL:", countQuery);
-    console.log("Parámetros de conteo:", countValues);
 
     const countResult = await pool.query(countQuery, countValues);
     const total = parseInt(countResult.rows[0].count);
@@ -75,12 +63,26 @@ const getUsers = async ({
       totalPages,
     };
   } catch (error) {
-    console.error("Error en getUsers:", error);
     throw new Error(`Error al obtener usuarios: ${error.message}`);
   }
 };
 
-// Crear un usuario
+const getAdminId = async () => {
+  try {
+    const result = await pool.query(
+      "SELECT id FROM users WHERE role = $1 LIMIT 1",
+      ["admin"]
+    );
+    if (result.rows.length === 0) {
+      throw new Error("No se encontró un administrador");
+    }
+    return result.rows[0].id;
+  } catch (error) {
+    console.log("userService: adminId:", error);
+    throw error;
+  }
+};
+
 const createUser = async (userData) => {
   try {
     const { first_name, last_name, email, password, role } = userData;
@@ -98,7 +100,6 @@ const createUser = async (userData) => {
   }
 };
 
-// Actualizar un usuario
 const updateUser = async (userId, userData) => {
   try {
     const { first_name, last_name, email, password, role } = userData;
@@ -152,7 +153,6 @@ const updateUser = async (userId, userData) => {
   }
 };
 
-// Eliminar un usuario
 const deleteUser = async (userId) => {
   try {
     const result = await pool.query(
@@ -168,7 +168,6 @@ const deleteUser = async (userId) => {
   }
 };
 
-// Obtener usuario por ID (para desencriptar contraseña si es necesario)
 const getUserById = async (userId) => {
   try {
     const result = await pool.query(
@@ -186,6 +185,7 @@ const getUserById = async (userId) => {
 
 module.exports = {
   getUsers,
+  getAdminId,
   createUser,
   updateUser,
   deleteUser,

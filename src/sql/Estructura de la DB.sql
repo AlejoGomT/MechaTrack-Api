@@ -914,8 +914,15 @@ $$ LANGUAGE plpgsql;
 -- Función para notificar cambios en invoices
 CREATE OR REPLACE FUNCTION public.notify_invoice_changes()
 RETURNS TRIGGER AS $$
+DECLARE
+  admin_id VARCHAR(10);
+  secretary_id VARCHAR(10);
 BEGIN
   BEGIN
+    -- Obtener IDs de admin y secretary
+    SELECT id INTO admin_id FROM users WHERE role = 'admin' LIMIT 1;
+    SELECT id INTO secretary_id FROM users WHERE role = 'secretary' LIMIT 1;
+
     IF (TG_OP = 'INSERT') THEN
       PERFORM pg_notify(
         'invoice_created',
@@ -942,6 +949,34 @@ BEGIN
           'total', NEW.total
         )::text
       );
+      IF secretary_id IS NOT NULL THEN
+        INSERT INTO notifications (
+          order_id,
+          from_user_id,
+          to_user_id,
+          message,
+          type,
+          status,
+          details,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          NEW.order_id,
+          admin_id,
+          secretary_id,
+          format('Se actualizó el número de factura %s para la orden #%s', NEW.invoice_number, NEW.order_id),
+          'invoice_updated',
+          'Pendiente',
+          jsonb_build_object(
+            'invoice_id', NEW.id,
+            'invoice_number', NEW.invoice_number,
+            'order_id', NEW.order_id
+          ),
+          CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP
+        );
+      END IF;
     ELSIF (TG_OP = 'DELETE') THEN
       PERFORM pg_notify(
         'invoice_deleted',
@@ -950,6 +985,33 @@ BEGIN
           'order_id', OLD.order_id
         )::text
       );
+      IF secretary_id IS NOT NULL THEN
+        INSERT INTO notifications (
+          order_id,
+          from_user_id,
+          to_user_id,
+          message,
+          type,
+          status,
+          details,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          OLD.order_id,
+          admin_id,
+          secretary_id,
+          format('Se eliminó la factura de la orden #%s', OLD.order_id),
+          'invoice_deleted',
+          'Pendiente',
+          jsonb_build_object(
+            'invoice_id', OLD.id,
+            'order_id', OLD.order_id
+          ),
+          CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP
+        );
+      END IF;
       RETURN OLD;
     END IF;
     RETURN NEW;

@@ -16,6 +16,23 @@ const getUsers = async (req, res, next) => {
   }
 };
 
+const getAdminId = async (req, res) => {
+  try {
+    const adminId = await userService.getAdminId();
+    res.json({ id: adminId });
+  } catch (error) {
+    console.error(
+      "[userController] Error al obtener ID del administrador:",
+      error
+    );
+    res
+      .status(error.message === "No se encontró un administrador" ? 404 : 500)
+      .json({
+        message: error.message || "Error al obtener ID del administrador",
+      });
+  }
+};
+
 const createUser = async (req, res, next) => {
   try {
     const user = await userService.createUser(req.body);
@@ -54,6 +71,7 @@ const getUserById = async (req, res, next) => {
 
 module.exports = {
   getUsers,
+  getAdminId,
   createUser,
   updateUser,
   deleteUser,

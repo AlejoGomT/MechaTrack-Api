@@ -58,7 +58,6 @@ const getInvoices = async ({
       values.push(total);
     }
 
-    // Agregar ordenación y paginación
     query += `
       ORDER BY i.issued_at DESC
       LIMIT $${paramIndex++} OFFSET $${paramIndex++}
@@ -88,7 +87,7 @@ const getInvoices = async ({
       ${issuedAt ? `AND DATE(i.issued_at) = $${values.length + 5}` : ""}
       ${total ? `AND i.total = $${values.length + 6}` : ""}
     `;
-    const countValues = values.slice(0, values.length - 2); // Excluir limit y offset
+    const countValues = values.slice(0, values.length - 2);
 
     const [invoicesResult, countResult] = await Promise.all([
       pool.query(query, values),
@@ -110,6 +109,49 @@ const getInvoices = async ({
   }
 };
 
+const editInvoiceNumber = async (orderId, { invoice_number, issued_by }) => {
+  try {
+    const result = await pool.query(
+      `UPDATE invoices
+      SET invoice_number = $1, issued_by = $2, issued_at = CURRENT_TIMESTAMP
+      WHERE order_id = $3
+      RETURNING *`,
+      [(invoice_number, issued_by, orderId)]
+    );
+
+    if (!result.rows.length) {
+      throw new Error("Factura no encontrada");
+    }
+
+    return result.rows[0];
+  } catch (error) {
+    console.error("[invoicesService] Error al actualizar factura:", error);
+    throw new Error(error.message || "Error al actualizar la factura");
+  }
+};
+
+const deleteInvoice = async (orderId) => {
+  try {
+    const result = await pool.query(
+      `DELETE FROM invoices
+        WHERE order_id = $1
+        RETURNING *`,
+      [orderId]
+    );
+
+    if (!result.rows.length) {
+      throw new Error("Factura no encontrada");
+    }
+
+    return { message: "Factura eliminada" };
+  } catch (error) {
+    console.error("[invoicesService] Error al eliminar factura:", error);
+    throw new Error(error.message || "Error al eliminar factura");
+  }
+};
+
 module.exports = {
   getInvoices,
+  editInvoiceNumber,
+  deleteInvoice,
 };
