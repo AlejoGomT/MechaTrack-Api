@@ -2,9 +2,9 @@ const express = require("express");
 const router = express.Router();
 const userController = require("../controllers/userController");
 const { restrictTo } = require("../middleware/role");
-const verifyToken = require("../middleware/auth");
+const authenticateToken = require("../middleware/auth");
 
-router.use(verifyToken);
+router.use(authenticateToken);
 router.use(restrictTo("admin"));
 
 router.get("/", userController.getUsers);

@@ -85,5 +85,11 @@ router.delete(
   restrictTo("admin"),
   adminOrderController.deleteAdminPart
 );
+router.get(
+  "/admin-id",
+  authenticateToken,
+  restrictTo("admin", "secretary"),
+  adminOrderController.getAdminId
+);
 
 module.exports = router;

@@ -67,22 +67,6 @@ const getUsers = async ({
   }
 };
 
-const getAdminId = async () => {
-  try {
-    const result = await pool.query(
-      "SELECT id FROM users WHERE role = $1 LIMIT 1",
-      ["admin"]
-    );
-    if (result.rows.length === 0) {
-      throw new Error("No se encontró un administrador");
-    }
-    return result.rows[0].id;
-  } catch (error) {
-    console.log("userService: adminId:", error);
-    throw error;
-  }
-};
-
 const createUser = async (userData) => {
   try {
     const { first_name, last_name, email, password, role } = userData;
@@ -185,7 +169,6 @@ const getUserById = async (userId) => {
 
 module.exports = {
   getUsers,
-  getAdminId,
   createUser,
   updateUser,
   deleteUser,

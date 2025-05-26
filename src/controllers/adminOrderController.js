@@ -3,6 +3,23 @@ const { validationResult } = require("express-validator");
 const pool = require("../config/database");
 const { check } = require("express-validator");
 
+const getAdminId = async (req, res) => {
+  try {
+    const adminId = await adminOrderService.getAdminId();
+    res.json({ id: adminId });
+  } catch (error) {
+    console.error(
+      "[userController] Error al obtener ID del administrador:",
+      error
+    );
+    res
+      .status(error.message === "No se encontró un administrador" ? 404 : 500)
+      .json({
+        message: error.message || "Error al obtener ID del administrador",
+      });
+  }
+};
+
 const updateAdminOrder = [
   (req, res, next) => {
     if (req.body.parts && typeof req.body.parts === "string") {
@@ -585,6 +602,7 @@ const deleteAdminPart = [
 ];
 
 module.exports = {
+  getAdminId,
   updateAdminOrder,
   addAdminImages,
   deleteAdminImage,

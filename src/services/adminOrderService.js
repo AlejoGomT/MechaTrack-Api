@@ -2,6 +2,22 @@ const pool = require("../config/database");
 const fs = require("fs").promises;
 const path = require("path");
 
+const getAdminId = async () => {
+  try {
+    const result = await pool.query(
+      "SELECT id FROM users WHERE role = $1 LIMIT 1",
+      ["admin"]
+    );
+    if (result.rows.length === 0) {
+      throw new Error("No se encontró un administrador");
+    }
+    return result.rows[0].id;
+  } catch (error) {
+    console.log("userService: adminId:", error);
+    throw error;
+  }
+};
+
 const updateAdminOrder = async (orderId, orderData, userId) => {
   const client = await pool.connect();
   try {
@@ -758,6 +774,7 @@ const deleteAdminPart = async (orderId, partId, userId) => {
 };
 
 module.exports = {
+  getAdminId,
   updateAdminOrder,
   addAdminImages,
   deleteAdminImage,

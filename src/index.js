@@ -138,6 +138,16 @@ io.on("connection", (socket) => {
           type,
           status: "Pendiente",
         });
+        io.to(toUserId).to(socket.userId).emit("notification", {
+          id: notification.id,
+          orderId,
+          fromUserId: socket.userId,
+          toUserId,
+          message,
+          type,
+          status: "Pendiente",
+          timestamp: new Date(),
+        });
         socket.emit("messageSent", {
           message: "Mensaje enviado",
           notification,
