@@ -11,12 +11,12 @@ const getNotifications = async ({
   try {
     let query = `
       SELECT n.*, 
-             array_agg(jsonb_build_object(
-               'id', na.id,
-               'file_path', na.file_path,
-               'file_type', na.file_type,
-               'created_at', na.created_at
-             )) FILTER (WHERE na.id IS NOT NULL) AS attachments
+        array_agg(jsonb_build_object(
+          'id', na.id,
+          'file_path', na.file_path,
+          'file_type', na.file_type,
+          'created_at', na.created_at
+        )) FILTER (WHERE na.id IS NOT NULL) AS attachments
       FROM notifications n
       LEFT JOIN notification_attachments na ON n.id = na.notification_id
       LEFT JOIN orders o ON n.order_id = o.id
@@ -160,13 +160,37 @@ const getMessagesByOrderId = async (order_id, user_id) => {
 const createNotification = async (notificationData, client = null) => {
   const { order_id, from_user_id, to_user_id, message, type, status, details } =
     notificationData;
+
+  // Normalizar order_id: tratar 'null' como null
+  const normalizedOrderId =
+    order_id === "null" || order_id === null ? null : order_id;
+
+  console.log(
+    "[notificationService] Datos recibidos en createNotification:",
+    { order_id, normalizedOrderId, type, from_user_id, to_user_id, message },
+    "Tipo de order_id:",
+    typeof order_id
+  );
+
+  // Validar que mensajes directos no tengan order_id
+  if (type === "direct_message" && normalizedOrderId !== null) {
+    console.error(
+      "[notificationService] Validación fallida: Mensajes directos no pueden tener order_id",
+      { normalizedOrderId, type }
+    );
+    throw {
+      status: 400,
+      message: "Mensajes directos no pueden tener order_id",
+    };
+  }
+
   const query = `
     INSERT INTO notifications (order_id, from_user_id, to_user_id, message, type, status, details, created_at)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     RETURNING *
   `;
   const values = [
-    type === "direct_message" ? null : order_id || null,
+    normalizedOrderId,
     from_user_id,
     to_user_id,
     message,
@@ -175,12 +199,7 @@ const createNotification = async (notificationData, client = null) => {
     details || null,
     new Date(),
   ];
-  if (type === "direct_message" && order_id) {
-    throw {
-      status: 400,
-      message: "Mensajes directos no pueden tener order_id",
-    };
-  }
+
   try {
     const queryClient = client || pool;
     console.log(
