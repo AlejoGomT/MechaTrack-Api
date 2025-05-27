@@ -11,7 +11,7 @@ const notificationService = require("./services/notificationService");
 
 const server = http.createServer(app);
 
-const io = new Server(server, {
+/*const io = new Server(server, {
   cors: {
     origin: "http://localhost:5173",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -22,7 +22,7 @@ const io = new Server(server, {
 });
 
 socket.init(io);
-app.set("io", socket.getIo());
+app.set("io", socket.getIo());*/
 
 const setupSubscriber = async () => {
   // Parsear DATABASE_URL
@@ -81,7 +81,7 @@ const setupSubscriber = async () => {
 
 setupSubscriber();
 
-io.use((socket, next) => {
+/*io.use((socket, next) => {
   const token = socket.handshake.query.token;
   if (!token) {
     return next(new Error("Token requerido"));
@@ -94,11 +94,11 @@ io.use((socket, next) => {
   } catch (error) {
     next(new Error("Token inválido"));
   }
-});
+});*/
 
 const clients = new Map();
 
-io.on("connection", (socket) => {
+/*io.on("connection", (socket) => {
   console.log(`Usuario ${socket.userId} conectado (Rol: ${socket.role})`);
 
   socket.join(socket.userId);
@@ -168,7 +168,7 @@ io.on("connection", (socket) => {
   socket.on("error", (error) => {
     console.error(`Error en Socket.IO para usuario ${socket.userId}:`, error);
   });
-});
+});*/
 
 module.exports = { server, io };
 
