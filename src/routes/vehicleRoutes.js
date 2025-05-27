@@ -10,5 +10,41 @@ router.get(
   restrictTo("admin", "technician", "secretary"),
   vehicleController.getVehicles
 );
+router.get(
+  "/models",
+  authenticateToken,
+  restrictTo("admin", "technician"),
+  vehicleController.getVehicleModels
+);
+router.get(
+  "/brands",
+  authenticateToken,
+  restrictTo("admin", "technician"),
+  vehicleController.getVehicleBrands
+);
+router.get(
+  "/branches",
+  authenticateToken,
+  restrictTo("admin"),
+  vehicleController.getBranches
+);
+router.post(
+  "/",
+  authenticateToken,
+  restrictTo("admin"),
+  vehicleController.createVehicle
+);
+router.put(
+  "/:economic_number",
+  authenticateToken,
+  restrictTo("admin"),
+  vehicleController.updateVehicle
+);
+router.delete(
+  "/:economic_number",
+  authenticateToken,
+  restrictTo("admin"),
+  vehicleController.deleteVehicle
+);
 
 module.exports = router;

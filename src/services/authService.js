@@ -16,7 +16,7 @@ const login = async (id, password) => {
   }
 
   const token = jwt.sign({ id: user.id, role: user.role }, config.jwtSecret, {
-    expiresIn: "1h",
+    expiresIn: "4h",
   });
 
   return {
