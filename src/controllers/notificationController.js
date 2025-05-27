@@ -147,20 +147,28 @@ const getConversations = async (req, res) => {
   try {
     const query = `
       SELECT 
-        c.conversation_id,
-        c.vehicle_economic_number,
-        c.order_status,
-        c.last_message_at,
-        c.total_messages,
-        c.unread_messages,
-        c.senders,
-        c.recipients
-      FROM conversations c
-      WHERE $1 IN (c.senders, c.recipients)
-      ORDER BY c.last_message_at DESC
+        o.id AS conversation_id,
+        o.id AS order_id,
+        o.vehicle_economic_number,
+        o.status AS order_status,
+        MAX(n.created_at) AS last_message_at,
+        COUNT(n.id) AS total_messages,
+        COUNT(CASE WHEN n.status = 'Pendiente' AND n.to_user_id = $1 THEN 1 END) AS unread_messages,
+        STRING_AGG(DISTINCT u_from.first_name || ' ' || u_from.last_name, ', ') AS senders,
+        STRING_AGG(DISTINCT u_to.first_name || ' ' || u_to.last_name, ', ') AS recipients
+      FROM orders o
+      LEFT JOIN notifications n ON o.id = n.order_id
+      LEFT JOIN users u_from ON n.from_user_id = u_from.id
+      LEFT JOIN users u_to ON n.to_user_id = u_to.id
+      WHERE o.technician_id = $1 OR n.from_user_id = $1 OR n.to_user_id = $1
+      GROUP BY o.id, o.vehicle_economic_number, o.status
+      ORDER BY last_message_at DESC NULLS LAST
     `;
     const result = await pool.query(query, [user_id]);
-
+    console.log(
+      "[notificationController] Conversaciones obtenidas:",
+      result.rows.length
+    );
     res.json(result.rows);
   } catch (error) {
     console.error(

@@ -1,7 +1,13 @@
 const pool = require("../config/database");
 const socket = require("../socket");
 
-const getNotifications = async ({ to_user_id, status, order_id, user_id }) => {
+const getNotifications = async ({
+  to_user_id,
+  status,
+  order_id,
+  user_id,
+  type,
+}) => {
   try {
     let query = `
       SELECT n.*, 
@@ -13,6 +19,7 @@ const getNotifications = async ({ to_user_id, status, order_id, user_id }) => {
              )) FILTER (WHERE na.id IS NOT NULL) AS attachments
       FROM notifications n
       LEFT JOIN notification_attachments na ON n.id = na.notification_id
+      LEFT JOIN orders o ON n.order_id = o.id
       WHERE 1=1
     `;
     const values = [];
@@ -35,6 +42,19 @@ const getNotifications = async ({ to_user_id, status, order_id, user_id }) => {
         values.push(order_id);
         paramIndex++;
       }
+    } else if (type === "direct_message") {
+      query += ` AND n.type = $${paramIndex} AND n.order_id IS NULL`;
+      values.push(type);
+      paramIndex++;
+      if (to_user_id && user_id) {
+        query += ` AND ((n.from_user_id = $${paramIndex} AND n.to_user_id = $${
+          paramIndex + 1
+        }) OR (n.from_user_id = $${
+          paramIndex + 1
+        } AND n.to_user_id = $${paramIndex}))`;
+        values.push(user_id, to_user_id);
+        paramIndex += 2;
+      }
     } else {
       query += ` AND n.type IN (
         'message', 
@@ -56,10 +76,12 @@ const getNotifications = async ({ to_user_id, status, order_id, user_id }) => {
         }) OR (n.from_user_id = $${
           paramIndex + 1
         } AND n.to_user_id = $${paramIndex}))`;
+        query += ` AND (n.type != 'direct_message' OR n.order_id IS NULL)`; // Reforzar filtro
         values.push(user_id, to_user_id);
         paramIndex += 2;
       } else if (user_id) {
         query += ` AND (n.to_user_id = $${paramIndex} OR n.from_user_id = $${paramIndex})`;
+        query += ` AND (n.type != 'direct_message' OR n.order_id IS NULL)`; // Reforzar filtro
         values.push(user_id);
         paramIndex++;
       }
@@ -153,6 +175,12 @@ const createNotification = async (notificationData, client = null) => {
     details || null,
     new Date(),
   ];
+  if (type === "direct_message" && order_id) {
+    throw {
+      status: 400,
+      message: "Mensajes directos no pueden tener order_id",
+    };
+  }
   try {
     const queryClient = client || pool;
     console.log(
@@ -173,24 +201,28 @@ const createNotification = async (notificationData, client = null) => {
       status: notification.status,
       details: notification.details,
       timestamp: notification.created_at.toISOString(),
+      attachments: notification.attachments || [],
     };
 
     const io = socket.getIo();
     if (io && typeof io.to === "function") {
-      if (notification.order_id) {
-        io.to(`order_${order_id}`).emit("notification", socketNotification);
+      if (notification.order_id && type !== "direct_message") {
+        io.to(notification.order_id).emit("notification", socketNotification);
         console.log(
           "[notificationService] Notificación emitida a order_",
-          order_id,
+          notification.order_id,
           ":",
           socketNotification
         );
       }
-      if (to_user_id) {
-        io.to(to_user_id).emit("notification", socketNotification);
+      if (type === "direct_message" && !notification.order_id) {
+        const room = `DIRECT_${[from_user_id, to_user_id].sort().join("_")}`;
+        io.to(room).emit("notification", socketNotification);
         console.log(
-          "[notificationService] Notificación emitida a usuario:",
-          to_user_id
+          "[notificationService] Notificación directa emitida a sala:",
+          room,
+          "Notificación:",
+          socketNotification
         );
       }
       if (type === "order_creation") {
@@ -201,13 +233,6 @@ const createNotification = async (notificationData, client = null) => {
         io.to("secretary").emit("notification", socketNotification);
         console.log(
           "[notificationService] Notificación emitida a rol: secretary"
-        );
-      }
-      if (type === "direct_message") {
-        io.to(from_user_id).emit("notification", socketNotification);
-        console.log(
-          "[notificationService] Notificación directa emitida a remitente:",
-          from_user_id
         );
       }
     } else {
@@ -260,7 +285,6 @@ const updateNotification = async (id, updates) => {
       notification
     );
 
-    // Enviar actualización por Socket.IO
     const socketNotification = {
       id: notification.id,
       orderId: notification.order_id,
