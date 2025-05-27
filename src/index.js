@@ -2,6 +2,7 @@ require("dotenv").config();
 const http = require("http");
 const { Server } = require("socket.io");
 const createSubscriber = require("pg-listen");
+const { parse } = require("pg-connection-string");
 const app = require("./app");
 const config = require("./config/config");
 const jwt = require("jsonwebtoken");
@@ -24,12 +25,11 @@ socket.init(io);
 app.set("io", socket.getIo());
 
 const setupSubscriber = async () => {
+  // Parsear DATABASE_URL
+  const parsedConfig = parse(process.env.DATABASE_URL);
+
   const subscriber = createSubscriber({
-    user: config.db.user,
-    host: config.db.host,
-    database: config.db.database,
-    password: config.db.password,
-    port: config.db.port,
+    connectionString: process.env.DATABASE_URL, // Usar connectionString directamente
     ssl:
       process.env.NODE_ENV === "production"
         ? { rejectUnauthorized: false }

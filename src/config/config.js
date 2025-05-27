@@ -4,10 +4,10 @@ module.exports = {
   port: process.env.PORT || 5000,
   jwtSecret: process.env.JWT_SECRET,
   db: {
-    user: process.env.DB_USER || "postgres",
-    host: process.env.DB_HOST || "localhost",
-    database: process.env.DB_NAME || "masimtaller_db",
-    password: process.env.DB_PASSWORD,
-    port: process.env.DB_PORT || 5432,
+    connectionString: process.env.DATABASE_URL,
+    ssl:
+      process.env.NODE_ENV === "production"
+        ? { rejectUnauthorized: false }
+        : false,
   },
 };
