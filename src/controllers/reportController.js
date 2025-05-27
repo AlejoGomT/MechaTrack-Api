@@ -48,7 +48,9 @@ exports.getOrderReport = async (req, res) => {
 exports.getOrderReportPdf = async (req, res) => {
   try {
     const { id } = req.params;
+    console.log(`[reportController] Generando PDF para orden ${id}`);
     const report = await reportService.getOrderReport(id);
+    console.log(`[reportController] Datos del reporte:`, report);
 
     // Eliminar duplicados como respaldo
     const uniqueParts = report.parts
@@ -295,7 +297,7 @@ exports.getOrderReportPdf = async (req, res) => {
       },
       {
         label: "Total:",
-        value: report.total ? report.total.toFixed(2) : "N/A",
+        value: report.total ? report.total : "N/A",
       },
       {
         label: "Emitido por:",
@@ -348,7 +350,7 @@ exports.getOrderReportPdf = async (req, res) => {
       const partRows = report.parts.map((part) => [
         part.name,
         part.quantity.toString(),
-        part.price ? part.price.toFixed(2) : "N/A",
+        part.price ? part.price : "N/A",
         part.status,
         part.requested_by || "N/A",
         part.authorized_by || "N/A",
@@ -489,17 +491,19 @@ exports.exportBranchReports = async (req, res) => {
       worksheet.addRow(report);
     });
 
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    );
+    res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
-      "attachment; filename=informes_sucursales.xlsx"
+      `attachment; filename=orden_${id}.pdf`
     );
-    await workbook.xlsx.write(res);
-    res.end();
+    stream.pipe(res);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error(
+      `[reportController] Error al generar PDF para orden ${req.params.id}:`,
+      error
+    );
+    res.status(error.message.includes("no encontrada") ? 404 : 500).json({
+      message: error.message || "Error interno al generar el informe PDF",
+    });
   }
 };

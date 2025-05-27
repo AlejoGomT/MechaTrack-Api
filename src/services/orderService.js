@@ -1114,9 +1114,12 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
         "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2 RETURNING *",
         [orderId, partId]
       );
-      if (partResult.rows[0].status !== "Rechazado") {
+      // El trigger notify_order_part_delete maneja quantity_reserved para status = 'Solicitado'
+      // Para otros estados, verificar si es necesario ajustar quantity_reserved
+      if (deleteResult.rows[0].status === "Aprobado") {
+        // Restaurar quantity si el repuesto fue aprobado previamente
         await client.query(
-          "UPDATE parts SET quantity_reserved = quantity_reserved - $1 WHERE id = $2",
+          "UPDATE parts SET quantity = quantity + $1 WHERE id = $2",
           [currentQuantity, partId]
         );
       }
@@ -1138,9 +1141,9 @@ const updatePartQuantity = async (orderId, partId, quantity) => {
         [quantity, partPrice, orderId, partId]
       );
       const quantityDiff = quantity - currentQuantity;
-      if (quantityDiff !== 0) {
+      if (quantityDiff !== 0 && partResult.rows[0].status === "Solicitado") {
         await client.query(
-          "UPDATE parts SET quantity_reserved = quantity_reserved + $1 WHERE id = $2",
+          "UPDATE parts SET quantity_reserved = GREATEST(quantity_reserved + $1, 0) WHERE id = $2",
           [quantityDiff, partId]
         );
       }
