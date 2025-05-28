@@ -1,8 +1,7 @@
 require("dotenv").config();
 const http = require("http");
 const { Server } = require("socket.io");
-const createSubscriber = require("pg-listen");
-const { parse } = require("pg-connection-string");
+const { Pool } = require("pg");
 const app = require("./app");
 const config = require("./config/config");
 const jwt = require("jsonwebtoken");
@@ -29,71 +28,48 @@ const setupSubscriber = async () => {
   let retries = 0;
 
   while (retries < maxRetries) {
-    const subscriber = createSubscriber({
+    const pool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl:
-        process.env.NODE_ENV === "production"
-          ? { sslmode: "require", rejectUnauthorized: false }
-          : false,
+      ssl: process.env.NODE_ENV === "production" ? { sslmode: "require", rejectUnauthorized: false } : false,
+      // family: 4 // Descomentar si necesitas forzar IPv4
     });
 
-    subscriber.events.on("error", (error) => {
-      console.error("[index] Error en pg-listen:", error.message);
-    });
-
+    let client;
     try {
-      await subscriber.connect();
-      await subscriber.listenTo("invoice_created");
-      await subscriber.listenTo("invoice_updated");
-      await subscriber.listenTo("invoice_deleted");
+      client = await pool.connect();
+      await client.query("LISTEN invoice_created");
+      await client.query("LISTEN invoice_updated");
+      await client.query("LISTEN invoice_deleted");
 
-      subscriber.notifications.on("invoice_created", (payload) => {
-        io.to("secretary").emit("invoice_created", payload);
-        console.log(
-          "[index] Emitiendo invoice_created a sala secretary:",
-          payload
-        );
+      client.on("notification", (msg) => {
+        const payload = msg.payload ? JSON.parse(msg.payload) : null;
+        if (msg.channel === "invoice_created") {
+          io.to("secretary").emit("invoice_created", payload);
+          console.log("[index] Emitiendo invoice_created a sala secretary:", payload);
+        } else if (msg.channel === "invoice_updated") {
+          io.to("secretary").emit("invoice_updated", payload);
+          console.log("[index] Emitiendo invoice_updated a sala secretary:", payload);
+        } else if (msg.channel === "invoice_deleted") {
+          io.to("secretary").emit("invoice_deleted", payload);
+          console.log("[index] Emitiendo invoice_deleted a sala secretary:", payload);
+        }
       });
 
-      subscriber.notifications.on("invoice_updated", (payload) => {
-        io.to("secretary").emit("invoice_updated", payload);
-        console.log(
-          "[index] Emitiendo invoice_updated a sala secretary:",
-          payload
-        );
-      });
-
-      subscriber.notifications.on("invoice_deleted", (payload) => {
-        io.to("secretary").emit("invoice_deleted", payload);
-        console.log(
-          "[index] Emitiendo invoice_deleted a sala secretary:",
-          payload
-        );
-      });
-
-      console.log("[index] pg-listen conectado y escuchando notificaciones");
+      console.log("[index] Conectado a Supabase y escuchando notificaciones");
       return; // Conexión exitosa, salir del bucle
     } catch (error) {
       retries++;
-      console.error(
-        `[index] Intento ${retries}/${maxRetries} fallido:`,
-        error.message
-      );
-
-      try {
-        await subscriber.close(); // Intentar cerrar el cliente
-      } catch (closeError) {
-        console.error(
-          "[index] Error al cerrar el cliente pg-listen:",
-          closeError.message
-        );
+      console.error(`[index] Intento ${retries}/${maxRetries} fallido:`, error.message);
+      if (client) {
+        try {
+          client.release();
+        } catch (releaseError) {
+          console.error("[index] Error al liberar el cliente:", releaseError.message);
+        }
       }
-
-      await subscriber.close(); // Cerrar el cliente antes de reintentar
+      await pool.end(); // Cerrar el pool
       if (retries === maxRetries) {
-        console.error(
-          "[index] Máximo de reintentos alcanzado. No se pudo conectar a la base de datos."
-        );
+        console.error("[index] Máximo de reintentos alcanzado. No se pudo conectar a la base de datos.");
         throw error;
       }
       console.error(`[index] Reintentando en 5 segundos...`);
@@ -201,4 +177,3 @@ module.exports = { server, io };
 server.listen(config.port, () => {
   console.log(`Servidor corriendo en http://localhost:${config.port}`);
 });
-
