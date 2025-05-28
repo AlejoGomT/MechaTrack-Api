@@ -13,7 +13,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: ["http://localhost:5173", "https://mechatrack-front.vercel.app"],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     transports: ["websocket", "polling"],
     credentials: true,
@@ -28,10 +28,10 @@ const setupSubscriber = async () => {
   const parsedConfig = parse(process.env.DATABASE_URL);
 
   const subscriber = createSubscriber({
-    connectionString: process.env.DATABASE_URL, // Usar connectionString directamente
+    connectionString: process.env.DATABASE_URL,
     ssl:
       process.env.NODE_ENV === "production"
-        ? { rejectUnauthorized: false }
+        ? { sslmode: "require", rejectUnauthorized: false }
         : false,
   });
 
@@ -39,42 +39,57 @@ const setupSubscriber = async () => {
     console.error("[index] Error en pg-listen:", error.message);
   });
 
-  try {
-    await subscriber.connect();
-    await subscriber.listenTo("invoice_created");
-    await subscriber.listenTo("invoice_updated");
-    await subscriber.listenTo("invoice_deleted");
+  const maxRetries = 5;
+  let retries = 0;
 
-    subscriber.notifications.on("invoice_created", (payload) => {
-      io.to("secretary").emit("invoice_created", payload);
-      console.log(
-        "[index] Emitiendo invoice_created a sala secretary:",
-        payload
+  while (retries < maxRetries) {
+    try {
+      await subscriber.connect();
+      await subscriber.listenTo("invoice_created");
+      await subscriber.listenTo("invoice_updated");
+      await subscriber.listenTo("invoice_deleted");
+
+      subscriber.notifications.on("invoice_created", (payload) => {
+        io.to("secretary").emit("invoice_created", payload);
+        console.log(
+          "[index] Emitiendo invoice_created a sala beberapa:",
+          payload
+        );
+      });
+
+      subscriber.notifications.on("invoice_updated", (payload) => {
+        io.to("secretary").emit("invoice_updated", payload);
+        console.log(
+          "[index] Emitiendo invoice_updated a sala secretary:",
+          payload
+        );
+      });
+
+      subscriber.notifications.on("invoice_deleted", (payload) => {
+        io.to("secretary").emit("invoice_deleted", payload);
+        console.log(
+          "[index] Emitiendo invoice_deleted a sala secretary:",
+          payload
+        );
+      });
+
+      console.log("[index] pg-listen conectado y escuchando notificaciones");
+      return;
+    } catch (error) {
+      retries++;
+      console.error(
+        `[index] Intento ${retries}/${maxRetries} fallido:`,
+        error.message
       );
-    });
-
-    subscriber.notifications.on("invoice_updated", (payload) => {
-      io.to("secretary").emit("invoice_updated", payload);
-      console.log(
-        "[index] Emitiendo invoice_updated a sala secretary:",
-        payload
-      );
-    });
-
-    subscriber.notifications.on("invoice_deleted", (payload) => {
-      io.to("secretary").emit("invoice_deleted", payload);
-      console.log(
-        "[index] Emitiendo invoice_deleted a sala secretary:",
-        payload
-      );
-    });
-
-    console.log("[index] pg-listen conectado y escuchando notificaciones");
-  } catch (error) {
-    console.error("[index] Error conectando a pg-listen:", error.message);
-    console.error("[index] Reintentando en 5 segundos...");
-    await subscriber.close();
-    setTimeout(setupSubscriber, 5000);
+      if (retries === maxRetries) {
+        console.error(
+          "[index] Máximo de reintentos alcanzado. No se pudo conectar a la base de datos."
+        );
+        throw error;
+      }
+      console.error(`[index] Reintentando en 5 segundos...`);
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
   }
 };
 
