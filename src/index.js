@@ -12,7 +12,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: ["http://localhost:5173", "https://mechatrack-front.vercel.app"],
+    origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     transports: ["websocket", "polling"],
     credentials: true,
@@ -30,8 +30,12 @@ const setupSubscriber = async () => {
   while (retries < maxRetries) {
     const pool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: process.env.NODE_ENV === "production" ? { sslmode: "require", rejectUnauthorized: false } : false,
-      // family: 4 // Descomentar si necesitas forzar IPv4
+      ssl:
+        process.env.NODE_ENV === "production"
+          ? { sslmode: "require", rejectUnauthorized: false }
+          : false,
+      //family: 4, // Descomentar si necesitas forzar IPv4
+
     });
 
     let client;
@@ -45,26 +49,28 @@ const setupSubscriber = async () => {
         const payload = msg.payload ? JSON.parse(msg.payload) : null;
         if (msg.channel === "invoice_created") {
           io.to("secretary").emit("invoice_created", payload);
-          console.log("[index] Emitiendo invoice_created a sala secretary:", payload);
         } else if (msg.channel === "invoice_updated") {
           io.to("secretary").emit("invoice_updated", payload);
-          console.log("[index] Emitiendo invoice_updated a sala secretary:", payload);
         } else if (msg.channel === "invoice_deleted") {
           io.to("secretary").emit("invoice_deleted", payload);
-          console.log("[index] Emitiendo invoice_deleted a sala secretary:", payload);
         }
       });
 
-      console.log("[index] Conectado a Supabase y escuchando notificaciones");
       return; // Conexión exitosa, salir del bucle
     } catch (error) {
       retries++;
-      console.error(`[index] Intento ${retries}/${maxRetries} fallido:`, error.message);
+      console.error(
+        `[index] Intento ${retries}/${maxRetries} fallido:`,
+        error.message
+      );
       if (client) {
         try {
           client.release();
         } catch (releaseError) {
-          console.error("[index] Error al liberar el cliente:", releaseError.message);
+          console.error(
+            "[index] Error al liberar el cliente:",
+            releaseError.message
+          );
         }
       }
       await pool.end(); // Cerrar el pool
@@ -101,29 +107,20 @@ io.use((socket, next) => {
 const clients = new Map();
 
 io.on("connection", (socket) => {
-  console.log(`Usuario ${socket.userId} conectado (Rol: ${socket.role})`);
-
   socket.join(socket.userId);
   socket.join(socket.role);
   clients.set(socket.userId, socket);
 
   socket.on("joinOrder", (orderId) => {
     socket.join(`order_${orderId}`);
-    console.log(`[Socket] Usuario ${socket.userId} se unió a order_${orderId}`);
   });
 
   socket.on("join", (room) => {
     socket.join(room);
-    console.log(`[Socket] Usuario ${socket.userId} se unió a ${room}`);
   });
 
   socket.on("typing", ({ room, isTyping }) => {
     socket.to(room).emit("typing", { userId: socket.userId, room, isTyping });
-    console.log(
-      `[Socket] Usuario ${socket.userId} ${
-        isTyping ? "está escribiendo" : "dejó de escribir"
-      } en ${room}`
-    );
   });
 
   socket.emit("welcome", `Bienvenido, usuario ${socket.userId}`);
@@ -164,7 +161,6 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     clients.delete(socket.userId);
-    console.log(`Usuario ${socket.userId} desconectado`);
   });
 
   socket.on("error", (error) => {

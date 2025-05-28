@@ -11,10 +11,13 @@ const login = async (req, res) => {
 };
 
 const verifyToken = async (req, res) => {
+  console.log("[authController] Verificando token para ID:", req.user.id);
   try {
     const user = await authService.verifyToken(req.user.id);
+    console.log("[authController] Usuario verificado:", user);
     res.json({ user });
   } catch (error) {
+    console.error("[authController] Error verificando token:", error.message);
     res.status(error.status || 500).json({ message: error.message });
   }
 };
