@@ -79,6 +79,7 @@ const setupSubscriber = async () => {
         `[index] Intento ${retries}/${maxRetries} fallido:`,
         error.message
       );
+
       try {
         await subscriber.close(); // Intentar cerrar el cliente
       } catch (closeError) {
@@ -87,6 +88,8 @@ const setupSubscriber = async () => {
           closeError.message
         );
       }
+
+      await subscriber.close(); // Cerrar el cliente antes de reintentar
       if (retries === maxRetries) {
         console.error(
           "[index] Máximo de reintentos alcanzado. No se pudo conectar a la base de datos."
@@ -198,3 +201,4 @@ module.exports = { server, io };
 server.listen(config.port, () => {
   console.log(`Servidor corriendo en http://localhost:${config.port}`);
 });
+
