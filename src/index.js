@@ -79,7 +79,14 @@ const setupSubscriber = async () => {
         `[index] Intento ${retries}/${maxRetries} fallido:`,
         error.message
       );
-      await subscriber.close(); // Cerrar el cliente antes de reintentar
+      try {
+        await subscriber.close(); // Intentar cerrar el cliente
+      } catch (closeError) {
+        console.error(
+          "[index] Error al cerrar el cliente pg-listen:",
+          closeError.message
+        );
+      }
       if (retries === maxRetries) {
         console.error(
           "[index] Máximo de reintentos alcanzado. No se pudo conectar a la base de datos."
@@ -92,7 +99,10 @@ const setupSubscriber = async () => {
   }
 };
 
-setupSubscriber();
+// Iniciar setupSubscriber sin bloquear el servidor
+setupSubscriber().catch((error) => {
+  console.error("[index] Error crítico en setupSubscriber:", error.message);
+});
 
 io.use((socket, next) => {
   const token = socket.handshake.query.token;
