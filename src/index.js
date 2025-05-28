@@ -34,7 +34,7 @@ const setupSubscriber = async () => {
         process.env.NODE_ENV === "production"
           ? { sslmode: "require", rejectUnauthorized: false }
           : false,
-      // family: 4 // Descomentar si necesitas forzar IPv4
+      //family: 4, // Descomentar si necesitas forzar IPv4
     });
 
     let client;
