@@ -25,24 +25,22 @@ socket.init(io);
 app.set("io", socket.getIo());
 
 const setupSubscriber = async () => {
-  const parsedConfig = parse(process.env.DATABASE_URL);
-
-  const subscriber = createSubscriber({
-    connectionString: process.env.DATABASE_URL,
-    ssl:
-      process.env.NODE_ENV === "production"
-        ? { sslmode: "require", rejectUnauthorized: false }
-        : false,
-  });
-
-  subscriber.events.on("error", (error) => {
-    console.error("[index] Error en pg-listen:", error.message);
-  });
-
   const maxRetries = 5;
   let retries = 0;
 
   while (retries < maxRetries) {
+    const subscriber = createSubscriber({
+      connectionString: process.env.DATABASE_URL,
+      ssl:
+        process.env.NODE_ENV === "production"
+          ? { sslmode: "require", rejectUnauthorized: false }
+          : false,
+    });
+
+    subscriber.events.on("error", (error) => {
+      console.error("[index] Error en pg-listen:", error.message);
+    });
+
     try {
       await subscriber.connect();
       await subscriber.listenTo("invoice_created");
@@ -52,7 +50,7 @@ const setupSubscriber = async () => {
       subscriber.notifications.on("invoice_created", (payload) => {
         io.to("secretary").emit("invoice_created", payload);
         console.log(
-          "[index] Emitiendo invoice_created a sala beberapa:",
+          "[index] Emitiendo invoice_created a sala secretary:",
           payload
         );
       });
@@ -74,13 +72,14 @@ const setupSubscriber = async () => {
       });
 
       console.log("[index] pg-listen conectado y escuchando notificaciones");
-      return;
+      return; // Conexión exitosa, salir del bucle
     } catch (error) {
       retries++;
       console.error(
         `[index] Intento ${retries}/${maxRetries} fallido:`,
         error.message
       );
+      await subscriber.close(); // Cerrar el cliente antes de reintentar
       if (retries === maxRetries) {
         console.error(
           "[index] Máximo de reintentos alcanzado. No se pudo conectar a la base de datos."
