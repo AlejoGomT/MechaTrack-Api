@@ -60,7 +60,7 @@ exports.getOrderReport = async (orderId) => {
             SELECT json_agg(
               json_build_object(
                   'part_id', op.part_id,
-                  'name', op.part_name, -- Cambiado de op.name a op.part_name
+                  'name', op.name,
                   'quantity', op.quantity,
                   'price', op.price,
                   'status', op.status,
@@ -71,7 +71,7 @@ exports.getOrderReport = async (orderId) => {
             FROM (
               SELECT DISTINCT 
                 op.part_id, 
-                p.name AS part_name, -- Alias para name
+                p.name, 
                 op.quantity, 
                 op.price, 
                 op.status, 
@@ -143,10 +143,6 @@ exports.getOrderReport = async (orderId) => {
     }
     return result.rows[0];
   } catch (error) {
-    console.error(
-      `[reportService] Error al obtener informe de orden ${orderId}:`,
-      error
-    );
     throw new Error(`Error al obtener informe de orden: ${error.message}`);
   }
 };

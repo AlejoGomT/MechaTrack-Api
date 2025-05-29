@@ -1,7 +1,7 @@
 require("dotenv").config();
 const http = require("http");
 const { Server } = require("socket.io");
-const createSubscriber = require("pg-listen");
+const { Pool } = require("pg");
 const app = require("./app");
 const config = require("./config/config");
 const jwt = require("jsonwebtoken");
@@ -12,7 +12,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: "*",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     transports: ["websocket", "polling"],
     credentials: true,
@@ -24,62 +24,71 @@ socket.init(io);
 app.set("io", socket.getIo());
 
 const setupSubscriber = async () => {
-  const subscriber = createSubscriber({
-    user: config.db.user,
-    host: config.db.host,
-    database: config.db.database,
-    password: config.db.password,
-    port: config.db.port,
-    ssl:
-      process.env.NODE_ENV === "production"
-        ? { rejectUnauthorized: false }
-        : false,
-  });
+  const maxRetries = 5;
+  let retries = 0;
 
-  subscriber.events.on("error", (error) => {
-    console.error("[index] Error en pg-listen:", error.message);
-  });
-
-  try {
-    await subscriber.connect();
-    await subscriber.listenTo("invoice_created");
-    await subscriber.listenTo("invoice_updated");
-    await subscriber.listenTo("invoice_deleted");
-
-    subscriber.notifications.on("invoice_created", (payload) => {
-      io.to("secretary").emit("invoice_created", payload);
-      console.log(
-        "[index] Emitiendo invoice_created a sala secretary:",
-        payload
-      );
+  while (retries < maxRetries) {
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl:
+        process.env.NODE_ENV === "production"
+          ? { sslmode: "require", rejectUnauthorized: false }
+          : false,
+      //family: 4, // Descomentar si necesitas forzar IPv4
     });
 
-    subscriber.notifications.on("invoice_updated", (payload) => {
-      io.to("secretary").emit("invoice_updated", payload);
-      console.log(
-        "[index] Emitiendo invoice_updated a sala secretary:",
-        payload
-      );
-    });
+    let client;
+    try {
+      client = await pool.connect();
+      await client.query("LISTEN invoice_created");
+      await client.query("LISTEN invoice_updated");
+      await client.query("LISTEN invoice_deleted");
 
-    subscriber.notifications.on("invoice_deleted", (payload) => {
-      io.to("secretary").emit("invoice_deleted", payload);
-      console.log(
-        "[index] Emitiendo invoice_deleted a sala secretary:",
-        payload
-      );
-    });
+      client.on("notification", (msg) => {
+        const payload = msg.payload ? JSON.parse(msg.payload) : null;
+        if (msg.channel === "invoice_created") {
+          io.to("secretary").emit("invoice_created", payload);
+        } else if (msg.channel === "invoice_updated") {
+          io.to("secretary").emit("invoice_updated", payload);
+        } else if (msg.channel === "invoice_deleted") {
+          io.to("secretary").emit("invoice_deleted", payload);
+        }
+      });
 
-    console.log("[index] pg-listen conectado y escuchando notificaciones");
-  } catch (error) {
-    console.error("[index] Error conectando a pg-listen:", error.message);
-    console.error("[index] Reintentando en 5 segundos...");
-    await subscriber.close();
-    setTimeout(setupSubscriber, 5000);
+      return; // Conexión exitosa, salir del bucle
+    } catch (error) {
+      retries++;
+      console.error(
+        `[index] Intento ${retries}/${maxRetries} fallido:`,
+        error.message
+      );
+      if (client) {
+        try {
+          client.release();
+        } catch (releaseError) {
+          console.error(
+            "[index] Error al liberar el cliente:",
+            releaseError.message
+          );
+        }
+      }
+      await pool.end(); // Cerrar el pool
+      if (retries === maxRetries) {
+        console.error(
+          "[index] Máximo de reintentos alcanzado. No se pudo conectar a la base de datos."
+        );
+        throw error;
+      }
+      console.error(`[index] Reintentando en 5 segundos...`);
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
   }
 };
 
-setupSubscriber();
+// Iniciar setupSubscriber sin bloquear el servidor
+setupSubscriber().catch((error) => {
+  console.error("[index] Error crítico en setupSubscriber:", error.message);
+});
 
 io.use((socket, next) => {
   const token = socket.handshake.query.token;
@@ -99,29 +108,20 @@ io.use((socket, next) => {
 const clients = new Map();
 
 io.on("connection", (socket) => {
-  console.log(`Usuario ${socket.userId} conectado (Rol: ${socket.role})`);
-
   socket.join(socket.userId);
   socket.join(socket.role);
   clients.set(socket.userId, socket);
 
   socket.on("joinOrder", (orderId) => {
     socket.join(`order_${orderId}`);
-    console.log(`[Socket] Usuario ${socket.userId} se unió a order_${orderId}`);
   });
 
   socket.on("join", (room) => {
     socket.join(room);
-    console.log(`[Socket] Usuario ${socket.userId} se unió a ${room}`);
   });
 
   socket.on("typing", ({ room, isTyping }) => {
     socket.to(room).emit("typing", { userId: socket.userId, room, isTyping });
-    console.log(
-      `[Socket] Usuario ${socket.userId} ${
-        isTyping ? "está escribiendo" : "dejó de escribir"
-      } en ${room}`
-    );
   });
 
   socket.emit("welcome", `Bienvenido, usuario ${socket.userId}`);
@@ -162,7 +162,6 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     clients.delete(socket.userId);
-    console.log(`Usuario ${socket.userId} desconectado`);
   });
 
   socket.on("error", (error) => {
