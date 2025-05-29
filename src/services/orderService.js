@@ -402,7 +402,8 @@ const updateOrder = async (id, orderData) => {
     parts,
     vehicle_economic_number,
     status,
-    finalized_at, // Nuevo campo
+    finalized_at,
+    updateImagesOnly,
   } = orderData;
 
   const client = await pool.connect();
@@ -431,6 +432,25 @@ const updateOrder = async (id, orderData) => {
         status: 400,
         message: "La sucursal no puede exceder los 10 caracteres",
       };
+    }
+
+    // Si updateImagesOnly es true, solo actualizar imágenes
+    if (updateImagesOnly === "true") {
+      if (images === undefined) {
+        throw {
+          status: 400,
+          message: "No se proporcionaron imágenes para actualizar",
+        };
+      }
+      const query = `
+        UPDATE orders
+        SET images = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+        RETURNING *
+      `;
+      const result = await client.query(query, [images || [], id]);
+      await client.query("COMMIT");
+      return await getOrderById(id);
     }
 
     const updates = [];
@@ -483,10 +503,7 @@ const updateOrder = async (id, orderData) => {
           "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2",
           [id, part.part_id]
         );
-        await client.query(
-          "UPDATE parts SET quantity_reserved = quantity_reserved - $1 WHERE id = $2",
-          [part.quantity, part.part_id]
-        );
+        // El trigger notify_order_part_delete maneja quantity_reserved
         await notificationService.deletePartRequestNotification(
           id,
           part.part_id,
@@ -616,7 +633,7 @@ const updateOrder = async (id, orderData) => {
           }
         }
       }
-    } else {
+    } else if (!updateImagesOnly) {
       const partsToDelete = await client.query(
         "SELECT part_id, quantity FROM order_parts WHERE order_id = $1 AND status = $2",
         [id, "Solicitado"]
@@ -626,10 +643,7 @@ const updateOrder = async (id, orderData) => {
           "DELETE FROM order_parts WHERE order_id = $1 AND part_id = $2",
           [id, part.part_id]
         );
-        await client.query(
-          "UPDATE parts SET quantity_reserved = quantity_reserved - $1 WHERE id = $2",
-          [part.quantity, part.part_id]
-        );
+        // El trigger notify_order_part_delete maneja quantity_reserved
         await notificationService.deletePartRequestNotification(
           id,
           part.part_id,

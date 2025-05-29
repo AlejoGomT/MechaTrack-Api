@@ -212,6 +212,7 @@ const updateOrder = async (req, res) => {
         requested_by: part.requested_by,
         authorized_by: part.authorized_by || null,
       })),
+      updateImagesOnly: req.body.updateImagesOnly, // Pasar el flag
     };
     const updatedOrder = await orderService.updateOrder(id, orderData);
     res.json(updatedOrder);
