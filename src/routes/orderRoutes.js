@@ -54,6 +54,7 @@ const optionalUpload = (req, res, next) => {
 router.get("/counts", authenticateToken, orderController.getOrderCounts);
 router.get("/", authenticateToken, orderController.getOrders);
 router.get("/:id", authenticateToken, orderController.getOrderById);
+router.get("/branches", authenticateToken, orderController.getBranches);
 router.post(
   "/",
   authenticateToken,

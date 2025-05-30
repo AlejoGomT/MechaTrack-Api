@@ -11,7 +11,8 @@ const getOrders = async (
   page = 1,
   limit = 10,
   startDate,
-  endDate
+  endDate,
+  branch
 ) => {
   let query = `
     SELECT o.*, v.branch, v.plate, v.brand, v.model, v.year, v.mileage, 
@@ -50,6 +51,10 @@ const getOrders = async (
   if (endDate) {
     query += " AND o.created_at <= $" + (values.length + 1);
     values.push(endDate);
+  }
+  if (branch) {
+    query += " AND v.branch = $" + (values.length + 1);
+    values.push(branch);
   }
   query += ` ORDER BY o.created_at DESC LIMIT $${values.length + 1} OFFSET $${
     values.length + 2
@@ -185,6 +190,18 @@ const getOrderCounts = async (technician_id) => {
   } catch (err) {
     console.error("[ORDER_SERVICE] Error al obtener conteos:", err);
     throw { status: 500, message: "Error al obtener conteos de órdenes" };
+  }
+};
+
+const getBranches = async () => {
+  try {
+    const query = `SELECT DISTINCT branch FROM vehicles WHERE branch IS NOT NULL ORDER BY branch`;
+    const result = await pool.query(query);
+    console.log("[ORDER_SERVICE] Sucursales obtenidas:", result.rows);
+    return result.rows.map((row) => row.branch);
+  } catch (err) {
+    console.error("[ORDER_SERVICE] Error al obtener sucursales:", err);
+    throw { status: 500, message: "Error al obtener sucursales" };
   }
 };
 
@@ -1377,6 +1394,7 @@ module.exports = {
   getOrders,
   getOrderById,
   getOrderCounts,
+  getBranches,
   createOrder,
   updateOrder,
   updateOrderStatus,

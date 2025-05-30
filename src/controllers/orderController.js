@@ -75,6 +75,16 @@ const getOrderCounts = async (req, res) => {
   }
 };
 
+const getBranches = async (req, res) => {
+  try {
+    const result = await orderService.getBranches();
+    res.json(result);
+  } catch (error) {
+    console.error("[orderController] Error en getBranches:", error);
+    res.status(error.status || 500).json({ message: error.message });
+  }
+};
+
 const createOrder = async (req, res) => {
   const {
     type,
@@ -590,6 +600,7 @@ module.exports = {
   getOrders,
   getOrderById,
   getOrderCounts,
+  getBranches,
   createOrder,
   updateOrder,
   requestPart,
