@@ -295,7 +295,7 @@ exports.getOrderReportPdf = async (req, res) => {
       },
       {
         label: "Total:",
-        value: report.total ? report.total.toFixed(2) : "N/A",
+        value: report.total ? report.total : "N/A",
       },
       {
         label: "Emitido por:",
@@ -348,7 +348,7 @@ exports.getOrderReportPdf = async (req, res) => {
       const partRows = report.parts.map((part) => [
         part.name,
         part.quantity.toString(),
-        part.price ? part.price.toFixed(2) : "N/A",
+        part.price ? part.price : "N/A",
         part.status,
         part.requested_by || "N/A",
         part.authorized_by || "N/A",
