@@ -29,13 +29,15 @@ const setupSubscriber = async () => {
 
   while (retries < maxRetries) {
     const pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
+      user: config.db.user,
+      host: config.db.host,
+      database: config.db.database,
+      password: config.db.password,
+      port: config.db.port,
       ssl:
         process.env.NODE_ENV === "production"
-          ? { sslmode: "require", rejectUnauthorized: false }
+          ? { rejectUnauthorized: false }
           : false,
-      //family: 4, // Descomentar si necesitas forzar IPv4
-
     });
 
     let client;
@@ -75,7 +77,9 @@ const setupSubscriber = async () => {
       }
       await pool.end(); // Cerrar el pool
       if (retries === maxRetries) {
-        console.error("[index] Máximo de reintentos alcanzado. No se pudo conectar a la base de datos.");
+        console.error(
+          "[index] Máximo de reintentos alcanzado. No se pudo conectar a la base de datos."
+        );
         throw error;
       }
       console.error(`[index] Reintentando en 5 segundos...`);

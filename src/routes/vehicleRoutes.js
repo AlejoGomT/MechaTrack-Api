@@ -7,25 +7,25 @@ const { restrictTo } = require("../middleware/role");
 router.get(
   "/",
   authenticateToken,
-  restrictTo("admin", "technician", "secretary"),
+  restrictTo("admin", "technician", "secretary", "client"),
   vehicleController.getVehicles
 );
 router.get(
   "/models",
   authenticateToken,
-  restrictTo("admin", "technician"),
+  restrictTo("admin", "technician", "client"),
   vehicleController.getVehicleModels
 );
 router.get(
   "/brands",
   authenticateToken,
-  restrictTo("admin", "technician"),
+  restrictTo("admin", "technician", "client"),
   vehicleController.getVehicleBrands
 );
 router.get(
   "/branches",
   authenticateToken,
-  restrictTo("admin"),
+  restrictTo("admin", "client"),
   vehicleController.getBranches
 );
 router.post(

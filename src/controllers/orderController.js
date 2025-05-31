@@ -15,6 +15,7 @@ const getOrders = async (req, res) => {
     serviceType,
     startDate,
     endDate,
+    branch,
   } = req.query;
   try {
     const result = await orderService.getOrders(
@@ -26,7 +27,8 @@ const getOrders = async (req, res) => {
       parseInt(page),
       parseInt(limit),
       startDate,
-      endDate
+      endDate,
+      branch
     );
     res.json({
       orders: result.orders,
