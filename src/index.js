@@ -29,12 +29,15 @@ const setupSubscriber = async () => {
 
   while (retries < maxRetries) {
     const pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
+      user: config.db.user,
+      host: config.db.host,
+      database: config.db.database,
+      password: config.db.password,
+      port: config.db.port,
       ssl:
         process.env.NODE_ENV === "production"
-          ? { sslmode: "require", rejectUnauthorized: false }
+          ? { rejectUnauthorized: false }
           : false,
-      //family: 4, // Descomentar si necesitas forzar IPv4
     });
 
     let client;
