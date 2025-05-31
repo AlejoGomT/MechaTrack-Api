@@ -31,15 +31,29 @@ const login = async (id, password) => {
 };
 
 const verifyToken = async (id) => {
-  const result = await pool.query(
-    "SELECT id, first_name, last_name, role FROM users WHERE id = $1",
-    [id]
-  );
-  const user = result.rows[0];
-  if (!user) {
-    throw { status: 401, message: "Usuario no encontrado" };
+  try {
+    console.log("[authService] Buscando usuario con ID:", id);
+    const result = await pool.query(
+      "SELECT id, first_name, last_name, role FROM users WHERE id = $1",
+      [id]
+    );
+    const user = result.rows[0];
+    if (!user) {
+      console.error("[authService] Usuario no encontrado:", id);
+      throw { status: 401, message: "Usuario no encontrado" };
+    }
+    console.log("[authService] Usuario encontrado:", user);
+    return user;
+  } catch (error) {
+    console.error("[authService] Error en verifyToken:", {
+      message: error.message,
+      stack: error.stack,
+    });
+    throw {
+      status: error.status || 500,
+      message: error.message || "Error verificando usuario",
+    };
   }
-  return user;
 };
 
 module.exports = { login, verifyToken };

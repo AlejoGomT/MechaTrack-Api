@@ -93,14 +93,17 @@ setupSubscriber().catch((error) => {
 io.use((socket, next) => {
   const token = socket.handshake.query.token;
   if (!token) {
+    console.error("[Socket.IO] Token requerido");
     return next(new Error("Token requerido"));
   }
   try {
     const decoded = jwt.verify(token, config.jwtSecret);
+    console.log("[Socket.IO] Token verificado, usuario:", decoded);
     socket.userId = decoded.id;
     socket.role = decoded.role;
     next();
   } catch (error) {
+    console.error("[Socket.IO] Error verificando token:", error.message);
     next(new Error("Token inválido"));
   }
 });
