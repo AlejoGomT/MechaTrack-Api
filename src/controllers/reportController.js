@@ -56,18 +56,7 @@ exports.getOrderReportPdf = async (req, res) => {
           new Map(report.parts.map((part) => [part.part_id, part])).values()
         )
       : [];
-    const uniqueNotifications = report.notifications
-      ? Array.from(
-          new Map(
-            report.notifications.map((notification) => [
-              `${notification.message}-${notification.created_at}`,
-              notification,
-            ])
-          ).values()
-        )
-      : [];
     report.parts = uniqueParts;
-    report.notifications = uniqueNotifications;
 
     const doc = new PDFDocument({ margin: 50 });
     const stream = new PassThrough();
@@ -287,15 +276,23 @@ exports.getOrderReportPdf = async (req, res) => {
       .text("Facturación", 50, doc.y);
     doc.moveDown(0.5);
 
+    const calculateSubtotal = () => {
+      return uniqueParts
+        .filter((part) => part.status === "Aprobado")
+        .reduce((sum, part) => sum + part.quantity * (part.price || 0), 0)
+        .toFixed(2);
+    };
+
+    const IVA_RATE = 0.16;
+    const subtotal = parseFloat(calculateSubtotal());
+    const iva = (subtotal * IVA_RATE).toFixed(2);
+    const totalWithIva = (subtotal + parseFloat(iva)).toFixed(2);
+
     const billingDetails = [
       { label: "Número de Factura:", value: report.invoice_number || "N/A" },
       {
         label: "Número de Albarán:",
         value: report.delivery_note_number || "N/A",
-      },
-      {
-        label: "Total:",
-        value: report.total ? report.total : "N/A",
       },
       {
         label: "Emitido por:",
@@ -309,12 +306,15 @@ exports.getOrderReportPdf = async (req, res) => {
           ? new Date(report.issued_at).toLocaleDateString()
           : "N/A",
       },
+      { label: "Subtotal:", value: `$${subtotal}` },
+      { label: "IVA 16%:", value: `$${iva}` },
+      { label: "Total + IVA:", value: `$${totalWithIva}` },
     ];
 
     currentY = doc.y;
     billingDetails.forEach((item, index) => {
-      const x = 50 + (index % 3) * 180;
-      const y = currentY + Math.floor(index / 3) * 40;
+      const x = 50 + (index % 4) * 135;
+      const y = currentY + Math.floor(index / 4) * 40;
       doc
         .font("Bold")
         .fontSize(10)
@@ -325,7 +325,7 @@ exports.getOrderReportPdf = async (req, res) => {
         .fillColor(colors.backgroundDark)
         .text(item.value, x + 80, y, { width: 90 });
     });
-    doc.y = currentY + Math.ceil(billingDetails.length / 3) * 40;
+    doc.y = currentY + Math.ceil(billingDetails.length / 4) * 40;
     doc.moveDown(2);
 
     // Sección: Repuestos
@@ -361,45 +361,6 @@ exports.getOrderReportPdf = async (req, res) => {
         .fontSize(10)
         .fillColor(colors.backgroundDark)
         .text("No hay repuestos registrados.", 50, doc.y);
-      currentY = doc.y + 20;
-    }
-    doc.y = currentY;
-    doc.moveDown(2);
-
-    // Sección: Notificaciones
-    doc
-      .fillColor(colors.backgroundDark)
-      .font("Bold")
-      .fontSize(14)
-      .text("Notificaciones", 50, doc.y);
-    doc.moveDown(0.5);
-
-    if (
-      report.notifications &&
-      report.notifications.length > 0 &&
-      report.notifications[0].message
-    ) {
-      const notificationHeaders = ["Mensaje", "Fecha", "De", "Para"];
-      const notificationRows = report.notifications.map((notification) => [
-        notification.message.substring(0, 50) +
-          (notification.message.length > 50 ? "..." : ""),
-        new Date(notification.created_at).toLocaleDateString(),
-        notification.from_user || "N/A",
-        notification.to_user || "N/A",
-      ]);
-      const notificationColumnWidths = [230, 80, 80, 80];
-      currentY = drawTable(
-        doc.y,
-        notificationHeaders,
-        notificationRows,
-        notificationColumnWidths
-      );
-    } else {
-      doc
-        .font("Regular")
-        .fontSize(10)
-        .fillColor(colors.backgroundDark)
-        .text("No hay notificaciones registradas.", 50, doc.y);
       currentY = doc.y + 20;
     }
     doc.y = currentY;
