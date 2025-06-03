@@ -45,6 +45,584 @@ exports.getOrderReport = async (req, res) => {
   }
 };
 
+exports.getOrdersReportPdf = async (req, res) => {
+  try {
+    const { startDate, endDate, branch, status, orderNumber, economicNumber } =
+      req.query;
+
+    const orders = await reportService.getOrdersReport({
+      startDate,
+      endDate,
+      branch,
+      status,
+      orderNumber,
+      economicNumber,
+    });
+
+    const doc = new PDFDocument({ margin: 50 });
+    const stream = new PassThrough();
+    doc.pipe(stream);
+
+    doc.registerFont("Bold", "Helvetica-Bold");
+    doc.registerFont("Regular", "Helvetica");
+
+    doc.on("error", (err) => {
+      console.error("[getOrdersReportPdf] Error en PDFDocument:", err);
+      res.status(500).end();
+    });
+
+    // Función para dibujar tablas (reutilizada de getOrderReportPdf)
+    const drawTable = (y, headers, rows, columnWidths) => {
+      const rowHeight = 20;
+      const headerHeight = 25;
+      const pageHeight = doc.page.height - doc.page.margins.bottom;
+      let currentY = y;
+
+      const checkPageBreak = (requiredHeight) => {
+        if (currentY + requiredHeight > pageHeight) {
+          doc.addPage();
+          currentY = doc.page.margins.top;
+        }
+      };
+
+      checkPageBreak(headerHeight);
+      doc
+        .fillColor(colors.backgroundLight)
+        .rect(50, currentY, 495, headerHeight)
+        .fill();
+      headers.forEach((header, i) => {
+        doc
+          .font("Bold")
+          .fontSize(10)
+          .fillColor("white")
+          .text(header, 55 + sumWidths(columnWidths, 0, i), currentY + 5, {
+            width: columnWidths[i],
+            align: "center",
+          });
+      });
+      currentY += headerHeight;
+
+      rows.forEach((row) => {
+        checkPageBreak(rowHeight);
+        row.forEach((cell, i) => {
+          doc
+            .font("Regular")
+            .fontSize(10)
+            .fillColor("#000000")
+            .text(cell, 55 + sumWidths(columnWidths, 0, i), currentY + 3, {
+              width: columnWidths[i],
+              height: rowHeight - 5,
+              align: i === 0 ? "left" : "center",
+              ellipsis: true,
+            });
+        });
+        doc
+          .lineWidth(0.5)
+          .strokeColor(colors.tableBorder)
+          .rect(50, currentY, 495, rowHeight)
+          .stroke();
+        currentY += rowHeight;
+      });
+
+      return currentY;
+    };
+
+    const sumWidths = (widths, start, end) => {
+      return widths.slice(start, end).reduce((sum, w) => sum + w, 0);
+    };
+
+    if (orders.length === 0) {
+      doc
+        .font("Regular")
+        .fontSize(10)
+        .fillColor(colors.backgroundDark)
+        .text(
+          "No se encontraron órdenes con los filtros aplicados.",
+          50,
+          doc.y
+        );
+      doc.end();
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        "attachment; filename=informe_ordenes.pdf"
+      );
+      stream.pipe(res);
+      return;
+    }
+
+    // Procesar cada orden
+    for (let i = 0; i < orders.length; i++) {
+      const order = orders[i];
+      const report = await reportService.getOrderReport(order.id);
+
+      // Eliminar duplicados en partes
+      const uniqueParts = report.parts
+        ? Array.from(
+            new Map(report.parts.map((part) => [part.part_id, part])).values()
+          )
+        : [];
+      report.parts = uniqueParts;
+
+      if (i > 0) {
+        doc.addPage();
+      }
+
+      // Título de la orden
+      doc
+        .fillColor(colors.backgroundDark)
+        .font("Bold")
+        .fontSize(20)
+        .text(`Informe de Orden #${report.order_number || report.id}`, {
+          align: "center",
+        });
+      doc.moveDown(2);
+
+      // Detalles de la Orden
+      doc
+        .fillColor(colors.backgroundDark)
+        .font("Bold")
+        .fontSize(14)
+        .text("Detalles de la Orden", 50, doc.y);
+      doc.moveDown(0.5);
+
+      const statusVariant =
+        report.status === "En Proceso"
+          ? "inProcess"
+          : report.status === "Pendiente"
+          ? "pending"
+          : report.status === "Finalizado" || report.status === "Facturado"
+          ? "completed"
+          : "default";
+      const statusStyle = statusColors[statusVariant] || statusColors.default;
+
+      const orderDetails = [
+        { label: "ID:", value: report.id },
+        { label: "Número de Pedido:", value: report.order_number || "N/A" },
+        {
+          label: "Estado:",
+          value: report.status,
+          isStatus: true,
+          backgroundColor: statusStyle.background,
+          textColor: statusStyle.text,
+        },
+        { label: "Tipo:", value: report.type },
+        {
+          label: "Creado:",
+          value: new Date(report.created_at).toLocaleDateString(),
+        },
+        {
+          label: "Finalizado:",
+          value: report.finalized_at
+            ? new Date(report.finalized_at).toLocaleDateString()
+            : "N/A",
+        },
+      ];
+
+      let currentY = doc.y;
+      orderDetails.forEach((item, index) => {
+        const x = 50 + (index % 3) * 180;
+        const y = currentY + Math.floor(index / 3) * 40;
+        doc
+          .font("Bold")
+          .fontSize(10)
+          .fillColor("#000000")
+          .text(item.label, x, y, { width: 80 });
+        if (item.isStatus) {
+          doc
+            .fillColor(item.backgroundColor)
+            .roundedRect(x + 80, y, 90, 15, 7.5)
+            .fill()
+            .font("Regular")
+            .fontSize(10)
+            .fillColor(item.textColor)
+            .text(item.value, x + 85, y + 3, { width: 80, align: "center" });
+        } else {
+          doc
+            .font("Regular")
+            .fontSize(10)
+            .fillColor(colors.backgroundDark)
+            .text(item.value, x + 80, y, { width: 80 });
+        }
+      });
+      doc.y = currentY + Math.ceil(orderDetails.length / 3) * 40;
+      doc.moveDown();
+
+      doc.font("Bold").fontSize(10).text("Descripción:", 50, doc.y);
+      doc
+        .font("Regular")
+        .fillColor(colors.backgroundDark)
+        .text(report.description, 130, doc.y - 10, { width: 400 });
+      doc.moveDown();
+      doc.font("Bold").fontSize(10).text("Diagnóstico:", 50, doc.y);
+      doc
+        .font("Regular")
+        .fillColor(colors.backgroundDark)
+        .text(report.initial_diagnosis || "N/A", 130, doc.y - 10, {
+          width: 400,
+        });
+      doc.moveDown();
+      doc.font("Bold").fontSize(10).text("Tareas:", 50, doc.y);
+      doc
+        .font("Regular")
+        .fillColor(colors.backgroundDark)
+        .text(report.tasks || "N/A", 130, doc.y - 10, { width: 400 });
+      doc.moveDown(2);
+
+      // Vehículo
+      const pageWidth = doc.page.width;
+      const textWidth = doc.widthOfString("Vehículo");
+      doc
+        .fillColor(colors.backgroundDark)
+        .font("Bold")
+        .fontSize(14)
+        .text("Vehículo", (pageWidth - textWidth) / 2, doc.y);
+      doc.moveDown(0.5);
+
+      const vehicleDetails = [
+        { label: "Número Económico:", value: report.economic_number },
+        { label: "Marca:", value: report.brand },
+        { label: "Modelo:", value: report.model },
+        { label: "Año:", value: report.year },
+        { label: "Sucursal:", value: report.branch },
+        { label: "Placa:", value: report.plate },
+        { label: "VIN:", value: report.vin },
+        { label: "Kilometraje:", value: report.mileage },
+      ];
+
+      currentY = doc.y;
+      vehicleDetails.forEach((item, index) => {
+        const x = 50 + (index % 4) * 135;
+        const y = currentY + Math.floor(index / 4) * 40;
+        doc
+          .font("Bold")
+          .fontSize(10)
+          .fillColor("#000000")
+          .text(item.label, x, y, { width: 60 });
+        doc
+          .font("Regular")
+          .fontSize(10)
+          .fillColor(colors.backgroundDark)
+          .text(item.value, x + 60, y, { width: 70 });
+      });
+      doc.y = currentY + Math.ceil(vehicleDetails.length / 4) * 40;
+      doc.moveDown(2);
+
+      // Facturación
+      doc
+        .fillColor(colors.backgroundDark)
+        .font("Bold")
+        .fontSize(14)
+        .text("Facturación", 50, doc.y);
+      doc.moveDown(0.5);
+
+      const calculateSubtotal = () => {
+        return uniqueParts
+          .filter((part) => part.status === "Aprobado")
+          .reduce((sum, part) => sum + part.quantity * (part.price || 0), 0)
+          .toFixed(2);
+      };
+
+      const IVA_RATE = 0.16;
+      const subtotal = parseFloat(calculateSubtotal());
+      const iva = (subtotal * IVA_RATE).toFixed(2);
+      const totalWithIva = (subtotal + parseFloat(iva)).toFixed(2);
+
+      const billingDetails = [
+        { label: "Número de Factura:", value: report.invoice_number || "N/A" },
+        {
+          label: "Número de Albarán:",
+          value: report.delivery_note_number || "N/A",
+        },
+        {
+          label: "Emitido por:",
+          value: report.issued_by_first_name
+            ? `${report.issued_by_first_name} ${report.issued_by_last_name}`
+            : "N/A",
+        },
+        {
+          label: "Fecha de Emisión:",
+          value: report.issued_at
+            ? new Date(report.issued_at).toLocaleDateString()
+            : "N/A",
+        },
+        { label: "Subtotal:", value: `$${subtotal}` },
+        { label: "IVA 16%:", value: `$${iva}` },
+        { label: "Total + IVA:", value: `$${totalWithIva}` },
+      ];
+
+      currentY = doc.y;
+      billingDetails.forEach((item, index) => {
+        const x = 50 + (index % 4) * 135;
+        const y = currentY + Math.floor(index / 4) * 40;
+        doc
+          .font("Bold")
+          .fontSize(10)
+          .fillColor("#000000")
+          .text(item.label, x, y, { width: 80 });
+        doc
+          .font("Regular")
+          .fontSize(10)
+          .fillColor(colors.backgroundDark)
+          .text(item.value, x + 80, y, { width: 90 });
+      });
+      doc.y = currentY + Math.ceil(billingDetails.length / 4) * 40;
+      doc.moveDown(2);
+
+      // Repuestos
+      doc
+        .fillColor(colors.backgroundDark)
+        .font("Bold")
+        .fontSize(14)
+        .text("Repuestos", 50, doc.y);
+      doc.moveDown(0.5);
+
+      if (report.parts && report.parts.length > 0 && report.parts[0].part_id) {
+        const partHeaders = [
+          "Nombre",
+          "Cantidad",
+          "Precio",
+          "Estado",
+          "Solicitado por",
+          "Autorizado por",
+        ];
+        const partRows = report.parts.map((part) => [
+          part.name,
+          part.quantity.toString(),
+          part.price ? part.price : "N/A",
+          part.status,
+          part.requested_by || "N/A",
+          part.authorized_by || "N/A",
+        ]);
+        const partColumnWidths = [150, 60, 60, 80, 80, 80];
+        currentY = drawTable(doc.y, partHeaders, partRows, partColumnWidths);
+      } else {
+        doc
+          .font("Regular")
+          .fontSize(10)
+          .fillColor(colors.backgroundDark)
+          .text("No hay repuestos registrados.", 50, doc.y);
+        currentY = doc.y + 20;
+      }
+      doc.y = currentY;
+      doc.moveDown(2);
+
+      // Historial
+      doc
+        .fillColor(colors.backgroundDark)
+        .font("Bold")
+        .fontSize(14)
+        .text("Historial", 50, doc.y);
+      doc.moveDown(0.5);
+
+      if (
+        report.history &&
+        report.history.length > 0 &&
+        report.history[0].description
+      ) {
+        const historyHeaders = ["Descripción", "Fecha", "Estado"];
+        const historyRows = report.history.map((entry) => [
+          entry.description.substring(0, 50) +
+            (entry.description.length > 50 ? "..." : ""),
+          new Date(entry.date).toLocaleDateString(),
+          entry.status,
+        ]);
+        const historyColumnWidths = [280, 80, 80];
+        currentY = drawTable(
+          doc.y,
+          historyHeaders,
+          historyRows,
+          historyColumnWidths
+        );
+      } else {
+        doc
+          .font("Regular")
+          .fontSize(10)
+          .fillColor(colors.backgroundDark)
+          .text("No hay historial registrado.", 50, doc.y);
+        currentY = doc.y + 20;
+      }
+      doc.y = currentY;
+      doc.moveDown();
+    }
+
+    doc.end();
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=informe_ordenes.pdf"
+    );
+    stream.pipe(res);
+  } catch (error) {
+    console.error("[getOrdersReportPdf] Error:", error);
+    res
+      .status(500)
+      .json({ message: `Error al generar el PDF: ${error.message}` });
+  }
+};
+
+exports.getPartsReport = async (req, res) => {
+  try {
+    const { startDate, endDate, branch, status, orderNumber, economicNumber } =
+      req.query;
+    const parts = await reportService.getPartsReport({
+      startDate,
+      endDate,
+      branch,
+      status,
+      orderNumber,
+      economicNumber,
+    });
+    res.json(parts);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getPartsReportPdf = async (req, res) => {
+  try {
+    const { startDate, endDate, branch, status, orderNumber, economicNumber } =
+      req.query;
+    const parts = await reportService.getPartsReport({
+      startDate,
+      endDate,
+      branch,
+      status,
+      orderNumber,
+      economicNumber,
+    });
+
+    const doc = new PDFDocument({ margin: 50 });
+    const stream = new PassThrough();
+    doc.pipe(stream);
+
+    doc.registerFont("Bold", "Helvetica-Bold");
+    doc.registerFont("Regular", "Helvetica");
+
+    const drawTable = (y, headers, rows, columnWidths) => {
+      const rowHeight = 20;
+      const headerHeight = 25;
+      const pageHeight = doc.page.height - doc.page.margins.bottom;
+      let currentY = y;
+
+      const checkPageBreak = (requiredHeight) => {
+        if (currentY + requiredHeight > pageHeight) {
+          doc.addPage();
+          currentY = doc.page.margins.top;
+        }
+      };
+
+      checkPageBreak(headerHeight);
+      doc
+        .fillColor(colors.backgroundLight)
+        .rect(50, currentY, 495, headerHeight)
+        .fill();
+      headers.forEach((header, i) => {
+        doc
+          .font("Bold")
+          .fontSize(10)
+          .fillColor("white")
+          .text(header, 55 + sumWidths(columnWidths, 0, i), currentY + 5, {
+            width: columnWidths[i],
+            align: "center",
+          });
+      });
+      currentY += headerHeight;
+
+      rows.forEach((row) => {
+        checkPageBreak(rowHeight);
+        row.forEach((cell, i) => {
+          doc
+            .font("Regular")
+            .fontSize(10)
+            .fillColor("#000000")
+            .text(cell, 55 + sumWidths(columnWidths, 0, i), currentY + 3, {
+              width: columnWidths[i],
+              height: rowHeight - 5,
+              align: "center",
+              ellipsis: true,
+            });
+        });
+        doc
+          .lineWidth(0.5)
+          .strokeColor(colors.tableBorder)
+          .rect(50, currentY, 495, rowHeight)
+          .stroke();
+        currentY += rowHeight;
+      });
+
+      return currentY;
+    };
+
+    const sumWidths = (widths, start, end) => {
+      return widths.slice(start, end).reduce((sum, w) => sum + w, 0);
+    };
+
+    doc
+      .fillColor(colors.backgroundDark)
+      .font("Bold")
+      .fontSize(20)
+      .text("Informe de Repuestos", { align: "center" });
+    doc.moveDown(2);
+
+    doc.font("Bold").fontSize(12).text("Filtros Aplicados", 50, doc.y);
+    doc.moveDown(0.5);
+    doc
+      .font("Regular")
+      .fontSize(10)
+      .text(`Sucursal: ${branch || "Todas"}`, 50, doc.y);
+    doc.text(`Estado: ${status || "Todos"}`, 50, doc.y + 15);
+    doc.text(`Número de Orden: ${orderNumber || "N/A"}`, 50, doc.y + 30);
+    doc.text(`Número Económico: ${economicNumber || "N/A"}`, 50, doc.y + 45);
+    doc.text(`Fecha Inicio: ${startDate || "N/A"}`, 50, doc.y + 60);
+    doc.text(`Fecha Fin: ${endDate || "N/A"}`, 50, doc.y + 75);
+    doc.moveDown(2);
+
+    if (parts.length > 0) {
+      const headers = [
+        "Nombre",
+        "Cantidad",
+        "Precio",
+        "Estado",
+        "Número de Orden",
+        "Sucursal",
+      ];
+      const rows = parts.map((part) => [
+        part.name,
+        part.quantity.toString(),
+        part.price ? `$${part.price.toFixed(2)}` : "N/A",
+        part.status,
+        part.order_id.toString(),
+        part.branch || "-",
+      ]);
+      const columnWidths = [120, 80, 80, 80, 80, 80];
+      drawTable(doc.y, headers, rows, columnWidths);
+    } else {
+      doc
+        .font("Regular")
+        .fontSize(10)
+        .fillColor(colors.backgroundDark)
+        .text(
+          "No se encontraron repuestos con los filtros aplicados.",
+          50,
+          doc.y
+        );
+    }
+
+    doc.end();
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=informe_repuestos.pdf`
+    );
+    stream.pipe(res);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 exports.getOrderReportPdf = async (req, res) => {
   try {
     const { id } = req.params;
