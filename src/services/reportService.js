@@ -110,68 +110,6 @@ exports.getOrdersReport = async ({
   }
 };
 
-exports.getPartsReport = async ({
-  startDate,
-  endDate,
-  branch,
-  status,
-  orderNumber,
-  economicNumber,
-}) => {
-  try {
-    let query = `
-      SELECT 
-          op.name, 
-          op.quantity, 
-          op.price, 
-          op.status, 
-          o.id AS order_id, 
-          v.branch
-      FROM orders o
-      JOIN vehicles v ON o.vehicle_economic_number = v.economic_number
-      JOIN order_parts op ON o.id = op.order_id
-      WHERE 1=1
-    `;
-    const values = [];
-    let paramIndex = 1;
-
-    if (startDate && endDate !== undefined && startDate !== "") {
-      query += ` AND o.created_at BETWEEN $${paramIndex} AND $${
-        paramIndex + 1
-      }`;
-      values.push(startDate, endDate);
-      paramIndex += 2;
-    }
-    if (branch !== undefined && branch !== "") {
-      query += ` AND v.branch = $${paramIndex}`;
-      values.push(branch);
-      paramIndex++;
-    }
-    if (status !== undefined && status !== "") {
-      query += ` AND o.status = $${paramIndex}`;
-      values.push(status);
-      paramIndex++;
-    }
-    if (orderNumber !== undefined && orderNumber !== "") {
-      query += ` AND o.order_number ILIKE $${paramIndex}`;
-      values.push(`%${orderNumber}%`);
-      paramIndex++;
-    }
-    if (economicNumber !== undefined && economicNumber !== "") {
-      query += ` AND o.vehicle_economic_number ILIKE $${paramIndex}`;
-      values.push(`%${economicNumber}%`);
-      paramIndex++;
-    }
-
-    query += " ORDER BY o.id DESC";
-
-    const result = await pool.query(query, values);
-    return result.rows;
-  } catch (error) {
-    throw new Error(`Error al obtener informe de repuestos: ${error.message}`);
-  }
-};
-
 exports.getOrderReport = async (orderId) => {
   try {
     const query = `
