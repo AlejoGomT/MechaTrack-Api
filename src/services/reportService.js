@@ -6,11 +6,21 @@ exports.getBranchReports = async ({ startDate, endDate, branch, status }) => {
       SELECT 
           v.branch,
           COUNT(o.id) AS total_orders,
-          SUM(CASE WHEN o.status = 'En Proceso' THEN 1 ELSE 0 END) AS in_process,
-          SUM(CASE WHEN o.status = 'Pendiente' THEN 1 ELSE 0 END) AS pending,
-          SUM(CASE WHEN o.status = 'Finalizado' THEN 1 ELSE 0 END) AS finalized,
-          SUM(CASE WHEN o.status = 'Pendiente de Facturación' THEN 1 ELSE 0 END) AS pending_billing,
-          SUM(CASE WHEN o.status = 'Facturado' THEN 1 ELSE 0 END) AS invoiced,
+          SUM(CASE WHEN o.status = 'En Proceso' THEN
+            1 ELSE 0 END
+          AS in_process,
+          SUM(CASE WHEN o.status = 'Pendiente' THEN
+            1 ELSE 0 END
+          AS pending,
+          SUM(CASE WHEN o.status = 'Finalizado' THEN
+            1 ELSE 0 END
+          AS finalized,
+          SUM(CASE WHEN o.status = 'Pendiente de Facturación' THEN
+            1 ELSE 0 END
+          AS pending_billing,
+          SUM(CASE WHEN o.status = 'Facturado' THEN
+            1 ELSE 0 END
+          AS invoiced,
           COALESCE(SUM(op.price * op.quantity), 0) AS total_parts_cost,
           COALESCE(SUM(i.total), 0) AS total_invoice_amount
       FROM vehicles v
@@ -70,13 +80,39 @@ exports.getOrdersReport = async ({
     const values = [];
     let paramIndex = 1;
 
-    if (startDate && endDate) {
+    // Validar y normalizar fechas
+    const normalizeDate = (dateStr) => {
+      if (!dateStr) return null;
+      const date = new Date(dateStr);
+      return date.toISOString().split("T")[0]; // Formato YYYY-MM-DD
+    };
+
+    const normalizedStartDate = normalizeDate(startDate);
+    const normalizedEndDate = normalizeDate(endDate);
+
+    console.log(
+      "[getOrdersReport] Fechas recibidas:",
+      { startDate, endDate },
+      "Normalizadas:",
+      { normalizedStartDate, normalizedEndDate }
+    );
+
+    if (normalizedStartDate && normalizedEndDate) {
       query += ` AND o.created_at BETWEEN $${paramIndex} AND $${
         paramIndex + 1
       }`;
-      values.push(startDate, endDate);
+      values.push(normalizedStartDate, normalizedEndDate);
       paramIndex += 2;
+    } else if (normalizedStartDate) {
+      query += ` AND o.created_at >= $${paramIndex}`;
+      values.push(normalizedStartDate);
+      paramIndex++;
+    } else if (normalizedEndDate) {
+      query += ` AND o.created_at <= $${paramIndex}`;
+      values.push(normalizedEndDate);
+      paramIndex++;
     }
+
     if (branch) {
       query += ` AND v.branch = $${paramIndex}`;
       values.push(branch);

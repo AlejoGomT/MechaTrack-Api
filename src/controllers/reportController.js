@@ -71,7 +71,7 @@ exports.getOrdersReportPdf = async (req, res) => {
       res.status(500).end();
     });
 
-    // Función para dibujar tablas (reutilizada de getOrderReportPdf)
+    // Función para dibujar tablas
     const drawTable = (y, headers, rows, columnWidths) => {
       const rowHeight = 20;
       const headerHeight = 25;
@@ -142,12 +142,6 @@ exports.getOrdersReportPdf = async (req, res) => {
           doc.y
         );
       doc.end();
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader(
-        "Content-Disposition",
-        "attachment; filename=informe_ordenes.pdf"
-      );
-      stream.pipe(res);
       return;
     }
 
@@ -679,6 +673,7 @@ exports.getOrderReportPdf = async (req, res) => {
         .text(item.label, x, y, { width: 60 });
       doc
         .font("Regular")
+        .fontSize(10)
         .fillColor(colors.backgroundDark)
         .text(item.value, x + 60, y, { width: 70 });
     });
@@ -739,6 +734,7 @@ exports.getOrderReportPdf = async (req, res) => {
         .text(item.label, x, y, { width: 80 });
       doc
         .font("Regular")
+        .fontSize(10)
         .fillColor(colors.backgroundDark)
         .text(item.value, x + 80, y, { width: 90 });
     });
