@@ -6,11 +6,21 @@ exports.getBranchReports = async ({ startDate, endDate, branch, status }) => {
       SELECT 
           v.branch,
           COUNT(o.id) AS total_orders,
-          SUM(CASE WHEN o.status = 'En Proceso' THEN 1 ELSE 0 END) AS in_process,
-          SUM(CASE WHEN o.status = 'Pendiente' THEN 1 ELSE 0 END) AS pending,
-          SUM(CASE WHEN o.status = 'Finalizado' THEN 1 ELSE 0 END) AS finalized,
-          SUM(CASE WHEN o.status = 'Pendiente de Facturación' THEN 1 ELSE 0 END) AS pending_billing,
-          SUM(CASE WHEN o.status = 'Facturado' THEN 1 ELSE 0 END) AS invoiced,
+          SUM(CASE WHEN o.status = 'En Proceso' THEN
+            1 ELSE 0 END
+          AS in_process,
+          SUM(CASE WHEN o.status = 'Pendiente' THEN
+            1 ELSE 0 END
+          AS pending,
+          SUM(CASE WHEN o.status = 'Finalizado' THEN
+            1 ELSE 0 END
+          AS finalized,
+          SUM(CASE WHEN o.status = 'Pendiente de Facturación' THEN
+            1 ELSE 0 END
+          AS pending_billing,
+          SUM(CASE WHEN o.status = 'Facturado' THEN
+            1 ELSE 0 END
+          AS invoiced,
           COALESCE(SUM(op.price * op.quantity), 0) AS total_parts_cost,
           COALESCE(SUM(i.total), 0) AS total_invoice_amount
       FROM vehicles v
@@ -44,6 +54,95 @@ exports.getBranchReports = async ({ startDate, endDate, branch, status }) => {
     return result.rows;
   } catch (error) {
     throw new Error(`Error al obtener informes por sucursal: ${error.message}`);
+  }
+};
+
+exports.getOrdersReport = async ({
+  startDate,
+  endDate,
+  branch,
+  status,
+  orderNumber,
+  economicNumber,
+}) => {
+  try {
+    let query = `
+      SELECT 
+        o.id,
+        o.order_number,
+        o.status,
+        o.vehicle_economic_number,
+        v.branch
+      FROM orders o
+      JOIN vehicles v ON o.vehicle_economic_number = v.economic_number
+      WHERE 1=1
+    `;
+    const values = [];
+    let paramIndex = 1;
+
+    // Validar y normalizar fechas
+    const normalizeDate = (dateStr) => {
+      if (!dateStr) return null;
+      const date = new Date(dateStr);
+      return date.toISOString().split("T")[0]; // Formato YYYY-MM-DD
+    };
+
+    const normalizedStartDate = normalizeDate(startDate);
+    const normalizedEndDate = normalizeDate(endDate);
+
+    console.log(
+      "[getOrdersReport] Fechas recibidas:",
+      { startDate, endDate },
+      "Normalizadas:",
+      { normalizedStartDate, normalizedEndDate }
+    );
+
+    if (normalizedStartDate && normalizedEndDate) {
+      query += ` AND o.created_at BETWEEN $${paramIndex} AND $${
+        paramIndex + 1
+      }`;
+      values.push(normalizedStartDate, normalizedEndDate);
+      paramIndex += 2;
+    } else if (normalizedStartDate) {
+      query += ` AND o.created_at >= $${paramIndex}`;
+      values.push(normalizedStartDate);
+      paramIndex++;
+    } else if (normalizedEndDate) {
+      query += ` AND o.created_at <= $${paramIndex}`;
+      values.push(normalizedEndDate);
+      paramIndex++;
+    }
+
+    if (branch) {
+      query += ` AND v.branch = $${paramIndex}`;
+      values.push(branch);
+      paramIndex++;
+    }
+    if (status) {
+      query += ` AND o.status = $${paramIndex}`;
+      values.push(status);
+      paramIndex++;
+    }
+    if (orderNumber) {
+      query += ` AND o.order_number ILIKE $${paramIndex}`;
+      values.push(`%${orderNumber}%`);
+      paramIndex++;
+    }
+    if (economicNumber) {
+      query += ` AND o.vehicle_economic_number ILIKE $${paramIndex}`;
+      values.push(`%${economicNumber}%`);
+      paramIndex++;
+    }
+
+    query += " ORDER BY o.id DESC";
+
+    console.log("[getOrdersReport] Query:", query, "Values:", values);
+    const result = await pool.query(query, values);
+    console.log("[getOrdersReport] Órdenes devueltas:", result.rows.length);
+    return result.rows;
+  } catch (error) {
+    console.error("[getOrdersReport] Error:", error);
+    throw new Error(`Error al obtener informe de órdenes: ${error.message}`);
   }
 };
 
