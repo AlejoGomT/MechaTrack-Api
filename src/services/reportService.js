@@ -84,6 +84,10 @@ exports.getOrdersReport = async ({
     const normalizeDate = (dateStr) => {
       if (!dateStr) return null;
       const date = new Date(dateStr);
+      if (isNaN(date.getTime())) {
+        console.error(`[normalizeDate] Fecha inválida: ${dateStr}`);
+        return null;
+      }
       return date.toISOString().split("T")[0]; // Formato YYYY-MM-DD
     };
 
@@ -246,7 +250,7 @@ exports.getOrderReport = async (orderId) => {
   }
 };
 
-exports.getPartsReport = async ({ branch, partName }) => {
+exports.getPartsReport = async ({ branch, partName, startDate, endDate }) => {
   try {
     let query = `
       SELECT 
@@ -254,6 +258,7 @@ exports.getPartsReport = async ({ branch, partName }) => {
           p.name AS part_name,
           p.id AS part_id,
           SUM(op.quantity) AS total_quantity,
+          MIN(o.created_at) AS order_created_at, -- Añadido para depuración
           COALESCE(
             JSON_AGG(
               JSON_BUILD_OBJECT(
@@ -273,6 +278,43 @@ exports.getPartsReport = async ({ branch, partName }) => {
     const values = [];
     let paramIndex = 1;
 
+    // Validar y normalizar fechas
+    const normalizeDate = (dateStr) => {
+      if (!dateStr) return null;
+      const date = new Date(dateStr);
+      if (isNaN(date.getTime())) {
+        console.error(`[getPartsReport] Fecha inválida: ${dateStr}`);
+        return null;
+      }
+      return date.toISOString().split("T")[0]; // Formato YYYY-MM-DD
+    };
+
+    const normalizedStartDate = normalizeDate(startDate);
+    const normalizedEndDate = normalizeDate(endDate);
+
+    console.log(
+      "[getPartsReport] Fechas recibidas:",
+      { startDate, endDate },
+      "Normalizadas:",
+      { normalizedStartDate, normalizedEndDate }
+    );
+
+    if (normalizedStartDate && normalizedEndDate) {
+      query += ` AND o.created_at BETWEEN $${paramIndex} AND $${
+        paramIndex + 1
+      }`;
+      values.push(normalizedStartDate, normalizedEndDate);
+      paramIndex += 2;
+    } else if (normalizedStartDate) {
+      query += ` AND o.created_at >= $${paramIndex}`;
+      values.push(normalizedStartDate);
+      paramIndex++;
+    } else if (normalizedEndDate) {
+      query += ` AND o.created_at <= $${paramIndex}`;
+      values.push(normalizedEndDate);
+      paramIndex++;
+    }
+
     if (branch) {
       query += ` AND v.branch = $${paramIndex}`;
       values.push(branch);
@@ -286,9 +328,23 @@ exports.getPartsReport = async ({ branch, partName }) => {
 
     query += ` GROUP BY v.branch, p.id, p.name ORDER BY v.branch, p.name`;
 
+    console.log("[getPartsReport] Query:", query);
+    console.log("[getPartsReport] Values:", values);
+
     const result = await pool.query(query, values);
+    console.log(
+      "[getPartsReport] Resultados:",
+      result.rows.map((row) => ({
+        branch: row.branch,
+        part_name: row.part_name,
+        total_quantity: row.total_quantity,
+        order_created_at: row.order_created_at,
+      }))
+    );
+
     return result.rows;
   } catch (error) {
+    console.error("[getPartsReport] Error:", error);
     throw new Error(`Error al obtener informe de repuestos: ${error.message}`);
   }
 };

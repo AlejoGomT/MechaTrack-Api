@@ -4,7 +4,7 @@ const reportController = require("../controllers/reportController");
 const verifyToken = require("../middleware/auth");
 const { restrictTo } = require("../middleware/role");
 router.use(verifyToken);
-router.use(restrictTo("admin", "secretary"));
+router.use(restrictTo("admin", "secretary", "client"));
 
 router.get("/branches", reportController.getBranchReports);
 router.get("/orders/pdf", reportController.getOrdersReportPdf);

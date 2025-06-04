@@ -249,7 +249,7 @@ exports.getOrdersReportPdf = async (req, res) => {
         .fillColor(colors.backgroundDark)
         .text(report.description, 130, doc.y - 10, { width: 400 });
       doc.moveDown();
-      doc.font("Bold").fontSize(10).text("Diagnóstico:", 50, doc.y);
+      doc.font("Bold").text("Diagnóstico:", 50, doc.y);
       doc
         .font("Regular")
         .fillColor(colors.backgroundDark)
@@ -257,11 +257,10 @@ exports.getOrdersReportPdf = async (req, res) => {
           width: 400,
         });
       doc.moveDown();
-      doc.font("Bold").fontSize(10).text("Tareas:", 50, doc.y);
-      doc
-        .font("Regular")
+      doc.font("Bold").text("Tareas:", 400);
+      doc.tasks
         .fillColor(colors.backgroundDark)
-        .text(report.tasks || "N/A", 130, doc.y - 10, { width: 400 });
+        .text(reportData || null, 130, { width: 400 });
       doc.moveDown(2);
 
       // Vehículo
@@ -271,7 +270,7 @@ exports.getOrdersReportPdf = async (req, res) => {
         .fillColor(colors.backgroundDark)
         .font("Bold")
         .fontSize(14)
-        .text("Vehículo", (pageWidth - textWidth) / 2, doc.y);
+        .text("Vehículo", половинаWidth);
       doc.moveDown(0.5);
 
       const vehicleDetails = [
@@ -285,8 +284,7 @@ exports.getOrdersReportPdf = async (req, res) => {
         { label: "Kilometraje:", value: report.mileage },
       ];
 
-      currentY = doc.y;
-      vehicleDetails.forEach((item, index) => {
+      currentY = doc.vehicleDetails.forEach((item, index) => {
         const x = 50 + (index % 4) * 135;
         const y = currentY + Math.floor(index / 4) * 40;
         doc
@@ -647,7 +645,7 @@ exports.getOrderReportPdf = async (req, res) => {
 
     doc
       .fillColor(colors.backgroundDark)
-      .font("Bold")
+      .font("Helvetica")
       .fontSize(14)
       .text("Vehículo", (pageWidth - textWidth) / 2, doc.y);
     doc.moveDown(0.5);
@@ -762,7 +760,7 @@ exports.getOrderReportPdf = async (req, res) => {
       const partRows = report.parts.map((part) => [
         part.name,
         part.quantity.toString(),
-        part.price ? part.price : "N/A",
+        part.price || "N/A",
         part.status,
         part.requested_by || "N/A",
         part.authorized_by || "N/A",
@@ -865,7 +863,7 @@ exports.exportBranchReports = async (req, res) => {
 
     res.setHeader(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocumentspreadsheetml.sheet"
     );
     res.setHeader(
       "Content-Disposition",
@@ -880,8 +878,13 @@ exports.exportBranchReports = async (req, res) => {
 
 exports.getPartsReport = async (req, res) => {
   try {
-    const { branch, partName } = req.query;
-    const reports = await reportService.getPartsReport({ branch, partName });
+    const { branch, partName, startDate, endDate } = req.query;
+    const reports = await reportService.getPartsReport({
+      branch,
+      partName,
+      startDate,
+      endDate,
+    });
     res.json(reports);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -892,15 +895,22 @@ exports.getBranches = async (req, res) => {
   try {
     const branches = await reportService.getBranches();
     res.json(branches.map((branch) => ({ value: branch, label: branch })));
+    console.log;
   } catch (error) {
     res.status(500).json({ message: error.message });
+    console.error(error.message);
   }
 };
 
 exports.getPartsReportPdf = async (req, res) => {
   try {
-    const { branch, partName } = req.query;
-    const reports = await reportService.getPartsReport({ branch, partName });
+    const { branch, partName, startDate, endDate } = req.query;
+    const reports = await reportService.getPartsReport({
+      branch,
+      partName,
+      startDate,
+      endDate,
+    });
 
     const doc = new PDFDocument({ margin: 50 });
     const stream = new PassThrough();
@@ -919,7 +929,7 @@ exports.getPartsReportPdf = async (req, res) => {
     const drawTable = (y, headers, rows, columnWidths) => {
       const rowHeight = 20;
       const headerHeight = 25;
-      const pageHeight = doc.page.height - doc.page.margins.bottom; // Corrección: doc.page.height
+      const pageHeight = doc.page.height - doc.page.margins.bottom;
       let currentY = y;
 
       const checkPageBreak = (requiredHeight) => {
@@ -974,7 +984,7 @@ exports.getPartsReportPdf = async (req, res) => {
     const sumWidths = (widths, start, end) =>
       widths.slice(start, end).reduce((sum, w) => sum + w, 0);
 
-    // Título del informe
+    // Título del informe del informe
     doc
       .fillColor(colors.backgroundDark)
       .font("Bold")
@@ -992,7 +1002,17 @@ exports.getPartsReportPdf = async (req, res) => {
       .font("Regular")
       .fontSize(10)
       .fillColor(colors.backgroundDark)
-      .text(`Repuesto: ${partName || "Todos"}`, 50, doc.y);
+      .text(`Repuesto: ${partName || "N/A"}`, 50, doc.y);
+    doc
+      .font("Regular")
+      .fontSize(10)
+      .fillColor(colors.backgroundDark)
+      .text(`Fecha Inicio: ${startDate || "Sin especificar"}`, 50, doc.y);
+    doc
+      .font("Regular")
+      .fontSize(10)
+      .fillColor(colors.backgroundDark)
+      .text(`Fecha Fin: ${endDate || "Sin especificar"}`, 50, doc.y);
     doc.moveDown(2);
 
     if (reports.length === 0) {
@@ -1028,7 +1048,7 @@ exports.getPartsReportPdf = async (req, res) => {
         .text(`Sucursal: ${report.branch}`, 50, currentY);
       currentY += 20;
 
-      const headers = ["Repuesto", "Cantidad", "Vehículos"];
+      const headers = ["Repuesto", "Cantidad", "Vehículos", "Fecha Orden"];
       const rows = [
         [
           report.part_name,
@@ -1036,9 +1056,12 @@ exports.getPartsReportPdf = async (req, res) => {
           report.vehicles
             .map((v) => `${v.economic_number} (${v.brand} ${v.model})`)
             .join(", ") || "N/A",
+          report.order_created_at
+            ? new Date(report.order_created_at).toLocaleDateString()
+            : "N/A",
         ],
       ];
-      const columnWidths = [200, 100, 195];
+      const columnWidths = [150, 80, 195, 70];
       currentY = drawTable(currentY, headers, rows, columnWidths);
       currentY += 20;
     });
@@ -1060,15 +1083,36 @@ exports.getPartsReportPdf = async (req, res) => {
 
 exports.getPartsReportXml = async (req, res) => {
   try {
-    const { branch, partName } = req.query;
-    const reports = await reportService.getPartsReport({ branch, partName });
+    const { branch, partName, startDate, endDate } = req.query;
+    const reports = await reportService.getPartsReport({
+      branch,
+      partName,
+      startDate,
+      endDate,
+    });
 
     const xml = XMLBuilder.create("PartsReport");
+    xml
+      .ele("Filters")
+      .ele("Branch", branch || "Todas")
+      .up()
+      .ele("PartName", partName || "N/A")
+      .up()
+      .ele("StartDate", startDate || "Sin especificar")
+      .up()
+      .ele("EndDate", endDate || "Sin especificar")
+      .up();
     reports.forEach((report) => {
       const branchNode = xml.ele("Branch", { name: report.branch });
       const partNode = branchNode.ele("Part");
       partNode.ele("Name", report.part_name);
       partNode.ele("Quantity", report.total_quantity);
+      partNode.ele(
+        "OrderDate",
+        report.order_created_at
+          ? new Date(report.order_created_at).toISOString().split("T")[0]
+          : "N/A"
+      );
       const vehiclesNode = partNode.ele("Vehicles");
       report.vehicles.forEach((vehicle) => {
         const vehicleNode = vehiclesNode.ele("Vehicle");
