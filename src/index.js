@@ -28,14 +28,15 @@ const setupSubscriber = async () => {
   let retries = 0;
 
   while (retries < maxRetries) {
-    const pool = new Pool({
+    const pool = new Pool(config.db);
+    /*const pool = new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl:
         process.env.NODE_ENV === "production"
           ? { sslmode: "require", rejectUnauthorized: false }
           : false,
       //family: 4, // Descomentar si necesitas forzar IPv4
-    });
+    });*/
 
     let client;
     try {
