@@ -1,5 +1,6 @@
 const reportService = require("../services/reportService");
 const PDFDocument = require("pdfkit");
+const XMLBuilder = require("xmlbuilder");
 const { PassThrough } = require("stream");
 
 // Colores basados en GlobalStyles.js
@@ -855,7 +856,6 @@ exports.exportBranchReports = async (req, res) => {
       { header: "Finalizado", key: "finalized", width: 15 },
       { header: "Pendiente de Facturación", key: "pending_billing", width: 20 },
       { header: "Facturado", key: "invoiced", width: 15 },
-      { header: "Costo Repuestos", key: "total_parts_cost", width: 15 },
       { header: "Total Facturado", key: "total_invoice_amount", width: 15 },
     ];
 
@@ -875,5 +875,219 @@ exports.exportBranchReports = async (req, res) => {
     res.end();
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getPartsReport = async (req, res) => {
+  try {
+    const { branch, partName } = req.query;
+    const reports = await reportService.getPartsReport({ branch, partName });
+    res.json(reports);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getBranches = async (req, res) => {
+  try {
+    const branches = await reportService.getBranches();
+    res.json(branches.map((branch) => ({ value: branch, label: branch })));
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getPartsReportPdf = async (req, res) => {
+  try {
+    const { branch, partName } = req.query;
+    const reports = await reportService.getPartsReport({ branch, partName });
+
+    const doc = new PDFDocument({ margin: 50 });
+    const stream = new PassThrough();
+    doc.pipe(stream);
+
+    doc.registerFont("Bold", "Helvetica-Bold");
+    doc.registerFont("Regular", "Helvetica");
+
+    // Manejo de errores en el documento
+    doc.on("error", (err) => {
+      console.error("[getPartsReportPdf] Error en PDFDocument:", err);
+      res.status(500).json({ message: "Error al generar el PDF" });
+    });
+
+    // Función para dibujar tablas
+    const drawTable = (y, headers, rows, columnWidths) => {
+      const rowHeight = 20;
+      const headerHeight = 25;
+      const pageHeight = doc.page.height - doc.page.margins.bottom; // Corrección: doc.page.height
+      let currentY = y;
+
+      const checkPageBreak = (requiredHeight) => {
+        if (currentY + requiredHeight > pageHeight) {
+          doc.addPage();
+          currentY = doc.page.margins.top;
+        }
+      };
+
+      checkPageBreak(headerHeight);
+      doc
+        .fillColor(colors.backgroundLight)
+        .rect(50, currentY, 495, headerHeight)
+        .fill();
+      headers.forEach((header, i) => {
+        doc
+          .font("Bold")
+          .fontSize(10)
+          .fillColor("white")
+          .text(header, 55 + sumWidths(columnWidths, 0, i), currentY + 5, {
+            width: columnWidths[i],
+            align: "center",
+          });
+      });
+      currentY += headerHeight;
+
+      rows.forEach((row) => {
+        checkPageBreak(rowHeight);
+        row.forEach((cell, i) => {
+          doc
+            .font("Regular")
+            .fontSize(10)
+            .fillColor("#000000")
+            .text(cell, 55 + sumWidths(columnWidths, 0, i), currentY + 3, {
+              width: columnWidths[i],
+              height: rowHeight - 5,
+              align: i === 0 ? "left" : "center",
+              ellipsis: true,
+            });
+        });
+        doc
+          .lineWidth(0.5)
+          .strokeColor(colors.tableBorder)
+          .rect(50, currentY, 495, rowHeight)
+          .stroke();
+        currentY += rowHeight;
+      });
+
+      return currentY;
+    };
+
+    const sumWidths = (widths, start, end) =>
+      widths.slice(start, end).reduce((sum, w) => sum + w, 0);
+
+    // Título del informe
+    doc
+      .fillColor(colors.backgroundDark)
+      .font("Bold")
+      .fontSize(20)
+      .text("Informe de Repuestos por Sucursal", { align: "center" });
+    doc.moveDown(2);
+
+    // Filtros aplicados
+    doc
+      .font("Regular")
+      .fontSize(10)
+      .fillColor(colors.backgroundDark)
+      .text(`Sucursal: ${branch || "Todas"}`, 50, doc.y);
+    doc
+      .font("Regular")
+      .fontSize(10)
+      .fillColor(colors.backgroundDark)
+      .text(`Repuesto: ${partName || "Todos"}`, 50, doc.y);
+    doc.moveDown(2);
+
+    if (reports.length === 0) {
+      doc
+        .font("Regular")
+        .fontSize(10)
+        .fillColor(colors.backgroundDark)
+        .text("No se encontraron datos con los filtros aplicados.", 50, doc.y);
+      doc.end();
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        "attachment; filename=informe_repuestos.pdf"
+      );
+      stream.pipe(res);
+      return;
+    }
+
+    let currentY = doc.y;
+    reports.forEach((report, index) => {
+      if (
+        index > 0 &&
+        currentY + 50 > doc.page.height - doc.page.margins.bottom
+      ) {
+        doc.addPage();
+        currentY = doc.page.margins.top;
+      }
+
+      doc
+        .fillColor(colors.backgroundDark)
+        .font("Bold")
+        .fontSize(14)
+        .text(`Sucursal: ${report.branch}`, 50, currentY);
+      currentY += 20;
+
+      const headers = ["Repuesto", "Cantidad", "Vehículos"];
+      const rows = [
+        [
+          report.part_name,
+          report.total_quantity.toString(),
+          report.vehicles
+            .map((v) => `${v.economic_number} (${v.brand} ${v.model})`)
+            .join(", ") || "N/A",
+        ],
+      ];
+      const columnWidths = [200, 100, 195];
+      currentY = drawTable(currentY, headers, rows, columnWidths);
+      currentY += 20;
+    });
+
+    doc.end();
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=informe_repuestos.pdf"
+    );
+    stream.pipe(res);
+  } catch (error) {
+    console.error("[getPartsReportPdf] Error:", error);
+    res
+      .status(500)
+      .json({ message: `Error al generar el PDF: ${error.message}` });
+  }
+};
+
+exports.getPartsReportXml = async (req, res) => {
+  try {
+    const { branch, partName } = req.query;
+    const reports = await reportService.getPartsReport({ branch, partName });
+
+    const xml = XMLBuilder.create("PartsReport");
+    reports.forEach((report) => {
+      const branchNode = xml.ele("Branch", { name: report.branch });
+      const partNode = branchNode.ele("Part");
+      partNode.ele("Name", report.part_name);
+      partNode.ele("Quantity", report.total_quantity);
+      const vehiclesNode = partNode.ele("Vehicles");
+      report.vehicles.forEach((vehicle) => {
+        const vehicleNode = vehiclesNode.ele("Vehicle");
+        vehicleNode.ele("EconomicNumber", vehicle.economic_number);
+        vehicleNode.ele("Brand", vehicle.brand);
+        vehicleNode.ele("Model", vehicle.model);
+      });
+    });
+
+    const xmlString = xml.end({ pretty: true });
+    res.setHeader("Content-Type", "application/xml");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=informe_repuestos.xml"
+    );
+    res.send(xmlString);
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: `Error al generar el XML: ${error.message}` });
   }
 };

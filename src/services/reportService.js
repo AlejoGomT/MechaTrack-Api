@@ -7,19 +7,19 @@ exports.getBranchReports = async ({ startDate, endDate, branch, status }) => {
           v.branch,
           COUNT(o.id) AS total_orders,
           SUM(CASE WHEN o.status = 'En Proceso' THEN
-            1 ELSE 0 END
+            1 ELSE 0 END)
           AS in_process,
           SUM(CASE WHEN o.status = 'Pendiente' THEN
-            1 ELSE 0 END
+            1 ELSE 0 END)
           AS pending,
           SUM(CASE WHEN o.status = 'Finalizado' THEN
-            1 ELSE 0 END
+            1 ELSE 0 END)
           AS finalized,
           SUM(CASE WHEN o.status = 'Pendiente de Facturación' THEN
-            1 ELSE 0 END
+            1 ELSE 0 END)
           AS pending_billing,
           SUM(CASE WHEN o.status = 'Facturado' THEN
-            1 ELSE 0 END
+            1 ELSE 0 END)
           AS invoiced,
           COALESCE(SUM(op.price * op.quantity), 0) AS total_parts_cost,
           COALESCE(SUM(i.total), 0) AS total_invoice_amount
@@ -243,5 +243,62 @@ exports.getOrderReport = async (orderId) => {
     return result.rows[0];
   } catch (error) {
     throw new Error(`Error al obtener informe de orden: ${error.message}`);
+  }
+};
+
+exports.getPartsReport = async ({ branch, partName }) => {
+  try {
+    let query = `
+      SELECT 
+          v.branch,
+          p.name AS part_name,
+          p.id AS part_id,
+          SUM(op.quantity) AS total_quantity,
+          COALESCE(
+            JSON_AGG(
+              JSON_BUILD_OBJECT(
+                  'economic_number', v.economic_number,
+                  'brand', v.brand,
+                  'model', v.model
+              )
+            ) FILTER (WHERE v.economic_number IS NOT NULL),
+            '[]'
+          ) AS vehicles
+      FROM order_parts op
+      JOIN orders o ON op.order_id = o.id
+      JOIN vehicles v ON o.vehicle_economic_number = v.economic_number
+      JOIN parts p ON op.part_id = p.id
+      WHERE op.status = 'Aprobado'
+    `;
+    const values = [];
+    let paramIndex = 1;
+
+    if (branch) {
+      query += ` AND v.branch = $${paramIndex}`;
+      values.push(branch);
+      paramIndex++;
+    }
+    if (partName) {
+      query += ` AND p.name ILIKE $${paramIndex}`;
+      values.push(`%${partName}%`);
+      paramIndex++;
+    }
+
+    query += ` GROUP BY v.branch, p.id, p.name ORDER BY v.branch, p.name`;
+
+    const result = await pool.query(query, values);
+    return result.rows;
+  } catch (error) {
+    throw new Error(`Error al obtener informe de repuestos: ${error.message}`);
+  }
+};
+
+exports.getBranches = async () => {
+  try {
+    const query = `SELECT DISTINCT branch FROM vehicles ORDER BY branch`;
+    const result = await pool.query(query);
+    return result.rows.map((row) => row.branch);
+  } catch (error) {
+    throw new Error(`Error al obtener sucursales: ${error.message}`);
   }
 };
